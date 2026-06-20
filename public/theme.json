@@ -1,0 +1,18 @@
+{
+  "variables": {
+    "light": {
+      "--primary": "174 64% 40%",
+      "--primary-foreground": "0 0% 100%",
+      "--ring": "174 64% 40%",
+      "--accent": "174 45% 90%",
+      "--accent-foreground": "174 60% 18%"
+    },
+    "dark": {
+      "--primary": "174 64% 47%",
+      "--primary-foreground": "200 40% 98%",
+      "--ring": "174 64% 47%",
+      "--accent": "186 30% 22%",
+      "--accent-foreground": "174 55% 85%"
+    }
+  }
+}

@@ -1,0 +1,29 @@
+/* Zero Agent — small, reliable cosmetic tweaks only.
+   The accent COLOUR is set the supported way in public/theme.json (window.theme),
+   because Chainlit injects those CSS variables with authority and overrides any
+   :root rule here. This file keeps only selectors that are safe across versions. */
+
+/* Code & monospace: a cleaner programming font where available. */
+pre, code, kbd {
+  font-family: "JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace;
+}
+pre {
+  border-radius: 10px;
+}
+
+/* Hebrew / RTL: let mixed-direction paragraphs lay out naturally. */
+p {
+  unicode-bidi: plaintext;
+}
+
+/* Slimmer, themed scrollbars (uses the teal --primary from theme.json). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--primary) / 0.5) transparent;
+}
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb {
+  background: hsl(var(--primary) / 0.45);
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-thumb:hover { background: hsl(var(--primary) / 0.7); }

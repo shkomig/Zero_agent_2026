@@ -1,0 +1,43 @@
+# --- Secrets & local environment (NEVER publish) ---------------------------
+.env
+*.key
+*.pem
+
+# --- Private runtime data: chat history, memory, outputs, voice models, logs -
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Virtual environment ----------------------------------------------------
+.venv/
+venv/
+env/
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Generated knowledge graph ----------------------------------------------
+graphify-out/
+
+# --- Chainlit runtime (keep config.toml + chainlit_he.md) -------------------
+.chainlit/.files/
+.files/
+.chainlit/translations/
+
+# --- Large model / binary artifacts -----------------------------------------
+*.gguf
+*.safetensors
+*.onnx
+*.bin
+*.pt
+
+# --- OS / editor ------------------------------------------------------------
+Thumbs.db
+.DS_Store
+*.log

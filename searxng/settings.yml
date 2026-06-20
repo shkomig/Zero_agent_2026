@@ -1,0 +1,20 @@
+# SearXNG settings for the Zero Agent (local, single-user metasearch).
+# Mounted into the container at /etc/searxng. Builds on SearXNG's defaults and
+# only overrides what the agent needs:
+#   * JSON output enabled  -> the deep_research tool can parse results.
+#   * limiter/bot-detection off -> a local agent isn't a bot to rate-limit.
+use_default_settings: true
+
+server:
+  # Local-only secret; change it if you expose the port beyond this machine.
+  secret_key: "zero-agent-local-searxng-secret-change-me"
+  limiter: false
+  image_proxy: false
+
+search:
+  # Enable the JSON API (off by default) so the agent can read results.
+  formats:
+    - html
+    - json
+  # English-first, but engines still return multilingual results.
+  default_lang: "en"

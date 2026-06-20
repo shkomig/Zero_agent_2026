@@ -1,0 +1,17 @@
+# Self-hosted SearXNG metasearch for the Zero Agent's deep_research tool.
+# 70+ search engines, clean JSON API, no API keys, no rate limits — 100% local.
+#
+# Start:  docker compose -f docker-compose.searxng.yml up -d   (or START_SEARXNG.bat)
+# Stop:   docker compose -f docker-compose.searxng.yml down
+# URL:    http://localhost:8888  (the agent reads ZERO_AGENT_SEARXNG_HOST)
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: zero-searxng
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    restart: unless-stopped

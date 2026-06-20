@@ -5,6 +5,7 @@
 ![100% local](https://img.shields.io/badge/100%25-local-orange.svg)
 ![Ollama](https://img.shields.io/badge/Ollama-powered-black.svg)
 ![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
+[![CI](https://github.com/shkomig/Zero_agent_2026/actions/workflows/ci.yml/badge.svg)](https://github.com/shkomig/Zero_agent_2026/actions/workflows/ci.yml)
 [![Stars](https://img.shields.io/github/stars/shkomig/Zero_agent_2026?style=social)](https://github.com/shkomig/Zero_agent_2026/stargazers)
 
 > A **100% local**, autonomous AI agent — no cloud, no API keys. It plans,
@@ -12,7 +13,18 @@
 > running entirely on your machine against a local [Ollama](https://ollama.com)
 > server.
 
+![Zero Agent — iterative calibrated research with a live task plan](docs/research.png)
+
+> `/research` running **iterate-until-confident**: the question is decomposed into
+> sub-queries, each searched and verified live (the **Tasks** panel), then
+> synthesized with **source-tier calibration** — note the report organizing
+> evidence *by quality* and flagging "Unrated Sources" instead of over-claiming.
+
+<details><summary>📸 More — the welcome screen</summary>
+
 ![Zero Agent UI](docs/welcome.png)
+
+</details>
 
 Zero is a personal AI workspace: a single tool-calling agent with ~33 tools, a
 multi-step **Supervisor-Worker** planner, an **iterative, calibrated research**

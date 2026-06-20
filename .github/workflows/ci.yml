@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  compile:
+    name: Byte-compile (syntax gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Byte-compile all Python sources
+        run: |
+          python -m compileall -q orchestrator app.py main.py telegram_bot.py test_agent.py
+      - name: Verify test harness parses
+        run: python -c "import ast; ast.parse(open('test_agent.py', encoding='utf-8').read()); print('test_agent.py OK')"

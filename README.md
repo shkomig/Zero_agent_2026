@@ -1,5 +1,12 @@
 # 🤖 Zero Agent
 
+![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)
+![100% local](https://img.shields.io/badge/100%25-local-orange.svg)
+![Ollama](https://img.shields.io/badge/Ollama-powered-black.svg)
+![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
+[![Stars](https://img.shields.io/github/stars/shkomig/Zero_agent_2026?style=social)](https://github.com/shkomig/Zero_agent_2026/stargazers)
+
 > A **100% local**, autonomous AI agent — no cloud, no API keys. It plans,
 > builds, researches, verifies its own work, and learns from its mistakes,
 > running entirely on your machine against a local [Ollama](https://ollama.com)
@@ -95,4 +102,9 @@ local process** — it can read/write files and run shell commands (gated by HIT
 ## 🛠️ Status
 
 Active development. Built and dog-fooded on a single RTX-class GPU. Contributions,
-issues, and ⭐ stars welcome.
+issues, and ⭐ stars welcome — if Zero is useful to you, a star helps others find it.
+
+## 📜 License
+
+[MIT](LICENSE) — free to use, modify, and distribute. Contributions are welcome
+under the same license; open an issue or PR.

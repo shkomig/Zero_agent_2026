@@ -1,0 +1,23 @@
+# Normalize line endings: text as LF in the repo, native on checkout.
+* text=auto
+
+# Windows batch / PowerShell MUST stay CRLF or cmd.exe breaks ("window closes
+# immediately"). Force it at the git level so a clone is always launchable.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Shell scripts must be LF even on Windows checkouts.
+*.sh    text eol=lf
+
+# Binary assets — never touch line endings / never diff.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+*.gguf  binary
+*.onnx  binary
+*.safetensors binary
+*.db    binary

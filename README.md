@@ -12,6 +12,8 @@
 > running entirely on your machine against a local [Ollama](https://ollama.com)
 > server.
 
+![Zero Agent UI](docs/welcome.png)
+
 Zero is a personal AI workspace: a single tool-calling agent with ~33 tools, a
 multi-step **Supervisor-Worker** planner, an **iterative, calibrated research**
 engine, long-term vector memory, local voice, and a Human-in-the-Loop safety gate

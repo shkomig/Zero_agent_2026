@@ -45,7 +45,20 @@ streaming voice. Stage 3 (barge-in — interrupt Zero mid-sentence) is the remai
 
 **Files:** `app.py`, `orchestrator/config.py`.
 
-### Added — Streaming voice OUT (conversation mode, stage 1): Zero speaks as it streams
+### Reverted — Streaming voice OUT (per-sentence speaking) — choppy, removed same day
+
+**What:** The per-sentence streaming speaker (`_VoiceStreamer`, `tts.synthesize_segment`)
+was reverted. In practice it was choppy and annoying — Zero spoke, paused, dropped a new
+line, spoke again, dozens of times per answer, because each sentence became its own
+auto-play audio chip (browser sequencing + message add/remove never flowed smoothly).
+Back to ONE clean clip synthesized for the whole answer after it streams to text.
+**Instant voice (thinking-off) is kept** — that was the real latency win. The deeper
+blocker for *light* voice conversation is the heavy, tool-oriented system prompt, tracked
+separately. Original (now-removed) entry kept below for history.
+
+**Files:** `app.py`, `orchestrator/tts.py`.
+
+### Added (REVERTED, see above) — Streaming voice OUT (conversation mode, stage 1)
 
 **What:** Real-time voice feel. Until now the reply was synthesized as ONE clip only
 **after** the whole answer finished — a long silence before Zero talked. New

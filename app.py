@@ -711,8 +711,16 @@ async def _handle_agent_command(text: str) -> bool:
         content=f"🤖 **Agent goal:** {goal}\n\n_Worker: `{config.WORKER_MODEL}` · "
         f"Planner: `{config.SUPERVISOR_MODEL}` · workspace: `{workspace}`_"
     ).send()
+    # Run as a cancellable task so the ⏹ Stop button (see @cl.on_stop) can abort it.
+    run_task = asyncio.create_task(sup.run_goal(goal))
+    cl.user_session.set("run_task", run_task)
     try:
-        status = await sup.run_goal(goal)
+        status = await run_task
+    except asyncio.CancelledError:
+        task_list.status = "Stopped"
+        await task_list.send()
+        await cl.Message(content="⏹️ Agent run stopped by you.").send()
+        return True
     except Exception as exc:  # noqa: BLE001 - never tear down the session
         logging.getLogger("zero_agent.ui").exception("agent run failed: %s", exc)
         task_list.status = "Failed"
@@ -721,6 +729,8 @@ async def _handle_agent_command(text: str) -> bool:
             content=f"⚠️ Agent run failed: {type(exc).__name__}: {exc}"
         ).send()
         return True
+    finally:
+        cl.user_session.set("run_task", None)
 
     ok = sup.task_manager.all_succeeded()
     task_list.status = "Done" if ok else "Stopped"
@@ -796,15 +806,23 @@ async def _handle_research_command(text: str) -> bool:
         content=f"🔬 **Researching:** {question}\n\n_iterative · source-tiered · "
         f"calibrated · model `{model}`_"
     ).send()
+    # Cancellable so the ⏹ Stop button (see @cl.on_stop) can abort the research.
+    run_task = asyncio.create_task(agent.investigate(question))
+    cl.user_session.set("run_task", run_task)
     try:
-        answer = await agent.investigate(question)
+        answer = await run_task
         await cl.Message(content=answer).send()
+    except asyncio.CancelledError:
+        task_list.status = "Stopped"
+        await task_list.send()
+        await cl.Message(content="⏹️ Research stopped by you.").send()
     except Exception as exc:  # noqa: BLE001
         logging.getLogger("zero_agent.ui").exception("research failed: %s", exc)
         task_list.status = "Failed"
         await task_list.send()
         await cl.Message(content=f"⚠️ Research failed: {type(exc).__name__}: {exc}").send()
     finally:
+        cl.user_session.set("run_task", None)
         await research_client.aclose()
     return True
 

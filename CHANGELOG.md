@@ -14,6 +14,17 @@ this file captures the concrete edits between/around those phases.
 
 ## 2026-06-21
 
+### Fixed — ⏹ Stop button now works for `/agent` and `/research`
+
+**What:** The Stop button only cancelled the normal chat turn — `/agent` and
+`/research` ran their work directly (awaited in the handler), with no cancellable
+`run_task` set, so there was nothing for `@cl.on_stop` to cancel. Both now run their
+work as `asyncio.create_task(...)` stored as the session `run_task` and handle
+`CancelledError` (status → "Stopped", a "stopped by you" note), so the ⏹ button
+aborts a long Supervisor/Research run cleanly.
+
+**Files:** `app.py`.
+
 ### Fixed — "Could not create a plan" robustness (planner retry + list fallback)
 
 **What:** A `/agent` goal sometimes failed instantly with "Could not create a plan"

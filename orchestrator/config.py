@@ -211,10 +211,11 @@ TTS_MAX_CHARS: int = int(os.getenv("ZERO_AGENT_TTS_MAX_CHARS", "1200"))
 # UI records audio; on stop it's transcribed locally and sent as a normal
 # message. Multilingual (auto-detects Hebrew/English). Gated by the Chainlit
 # `[features.audio]` switch in .chainlit/config.toml.
-# "medium" is notably better than "small" at NOT confusing Hebrew/accented
-# English with Arabic (the "small" model mis-transcribed speech as Arabic). A bit
-# slower on CPU; set ZERO_AGENT_STT_MODEL=small to trade accuracy for speed.
-STT_MODEL: str = os.getenv("ZERO_AGENT_STT_MODEL", "medium")  # base/small/medium
+# "small" on CPU is ~3x faster than "medium" (much snappier mic→text). The Arabic/
+# Hebrew mis-transcription that pushed us to "medium" was really an auto-DETECT
+# problem — with the language forced (the ⚙️ "Voice language" setting), "small" is
+# both fast AND accurate. Set ZERO_AGENT_STT_MODEL=medium for max accuracy.
+STT_MODEL: str = os.getenv("ZERO_AGENT_STT_MODEL", "small")  # base/small/medium
 STT_DEVICE: str = os.getenv("ZERO_AGENT_STT_DEVICE", "cpu")  # cpu / cuda / auto
 STT_COMPUTE_TYPE: str = os.getenv("ZERO_AGENT_STT_COMPUTE", "int8")
 # Empty = auto-detect language; set "he"/"en" to force one.
@@ -230,7 +231,7 @@ STT_AUTOSTOP: bool = os.getenv("ZERO_AGENT_STT_AUTOSTOP", "1").lower() in ("1","
 # RMS level (16-bit, 0–32767) below which a chunk counts as silence.
 STT_SILENCE_RMS: int = int(os.getenv("ZERO_AGENT_STT_SILENCE_RMS", "500"))
 # Trailing silence (seconds) after speech that ends an utterance → auto-send.
-STT_END_SILENCE_S: float = float(os.getenv("ZERO_AGENT_STT_END_SILENCE_S", "1.3"))
+STT_END_SILENCE_S: float = float(os.getenv("ZERO_AGENT_STT_END_SILENCE_S", "1.0"))
 # Minimum speech (seconds) before a pause can finalize (ignores brief blips).
 STT_MIN_SPEECH_S: float = float(os.getenv("ZERO_AGENT_STT_MIN_SPEECH_S", "0.4"))
 

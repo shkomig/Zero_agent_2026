@@ -70,11 +70,15 @@ def _write_wav(pcm: bytes, sample_rate: int, path: Path) -> None:
         wf.writeframes(pcm)
 
 
-async def transcribe_pcm(pcm: bytes, sample_rate: int) -> str | None:
+async def transcribe_pcm(
+    pcm: bytes, sample_rate: int, language: str | None = None
+) -> str | None:
     """Transcribe raw 16-bit mono PCM. Returns the text, or None.
 
-    Runs the blocking model in a worker thread so it never stalls the event
-    loop. Never raises.
+    ``language`` ("en"/"he"/…) forces the spoken language; empty/None falls back
+    to ``config.STT_LANGUAGE`` and finally to auto-detect. Forcing it both fixes
+    mis-detection (English heard as Hebrew) and is faster (skips the detect pass).
+    Runs the blocking model in a worker thread; never raises.
     """
     import asyncio
     import tempfile
@@ -84,6 +88,7 @@ async def transcribe_pcm(pcm: bytes, sample_rate: int) -> str | None:
     model = _get_model()
     if model is None:
         return None
+    lang = (language or config.STT_LANGUAGE or "").strip() or None
 
     def _run() -> str | None:
         tmp = Path(tempfile.gettempdir()) / f"zero_stt_{id(pcm)}.wav"
@@ -91,7 +96,7 @@ async def transcribe_pcm(pcm: bytes, sample_rate: int) -> str | None:
             _write_wav(pcm, sample_rate, tmp)
             segments, _info = model.transcribe(
                 str(tmp),
-                language=config.STT_LANGUAGE or None,
+                language=lang,
                 vad_filter=True,  # drop silence so empty/near-silent clips -> ""
             )
             text = " ".join(seg.text.strip() for seg in segments).strip()

@@ -82,6 +82,20 @@ DEFAULT_MODEL = (
     config.DEFAULT_MODEL if config.DEFAULT_MODEL in MODEL_OPTIONS else MODEL_OPTIONS[0]
 )
 
+# Voice-input language (⚙️ setting). Label → faster-whisper code ("" = auto-detect).
+# Default English: speaking English was being transcribed as Hebrew on auto-detect.
+_VOICE_LANGS: "dict[str, str]" = {"English": "en", "עברית": "he", "Auto-detect": ""}
+_VOICE_LANG_LABELS = list(_VOICE_LANGS)
+_DEFAULT_STT_LANG = "en"
+
+
+def _voice_lang_index(code: "str | None") -> int:
+    code = (code or _DEFAULT_STT_LANG)
+    for i, label in enumerate(_VOICE_LANG_LABELS):
+        if _VOICE_LANGS[label] == code:
+            return i
+    return 0
+
 # Quick-action buttons shown in the message composer (Chainlit "commands"). The
 # user taps one, types the subject, and sends — no need to phrase the
 # instruction. `message.command` carries the chosen id into on_message, where we
@@ -293,6 +307,9 @@ async def _init_session(selected: str) -> "tuple[OllamaClient, str] | None":
     # Spoken-reply toggle: default from config, only meaningful if the engine is
     # actually available (model files present + import OK).
     cl.user_session.set("tts", config.TTS_ENABLED and tts.available())
+    # Voice-input language default (overridable in ⚙️). English by default since
+    # auto-detect was mis-hearing English as Hebrew.
+    cl.user_session.set("stt_lang", config.STT_LANGUAGE or _DEFAULT_STT_LANG)
     return client, model
 
 
@@ -341,6 +358,12 @@ async def start() -> None:
                 id="speak",
                 label="🔊 Speak replies (local voice)",
                 initial=cl.user_session.get("tts") or False,
+            ),
+            Select(
+                id="voice_lang",
+                label="🎤 Voice input language",
+                values=_VOICE_LANG_LABELS,
+                initial_index=_voice_lang_index(cl.user_session.get("stt_lang")),
             ),
         ]
     ).send()
@@ -414,6 +437,14 @@ async def update_settings(settings: dict[str, Any]) -> None:
             await cl.Message(
                 content=("🔊 Spoken replies ON." if want else "🔇 Spoken replies OFF.")
             ).send()
+
+    # --- voice input language ---
+    if "voice_lang" in settings:
+        code = _VOICE_LANGS.get(settings.get("voice_lang"), "")
+        if code != (cl.user_session.get("stt_lang") or ""):
+            cl.user_session.set("stt_lang", code)
+            shown = settings.get("voice_lang")
+            await cl.Message(content=f"🎤 Voice input language: **{shown}**.").send()
 
 
 # UI notices emitted as assistant messages (welcome banner, "model switched",
@@ -1173,7 +1204,7 @@ async def _finalize_audio(manual: bool = False) -> None:
 
     cl.user_session.set("audio_busy", True)
     try:
-        text = await stt.transcribe_pcm(pcm, sr)
+        text = await stt.transcribe_pcm(pcm, sr, language=cl.user_session.get("stt_lang"))
         if not text:
             if manual:
                 await cl.Message(content="🎤 _Didn't catch that — please try again._").send()

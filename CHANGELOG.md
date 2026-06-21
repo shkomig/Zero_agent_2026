@@ -14,6 +14,20 @@ this file captures the concrete edits between/around those phases.
 
 ## 2026-06-21
 
+### Improved — voice input: faster + correct language (English heard as Hebrew, ~5s lag)
+
+**What:** Two real STT pain points. (1) **Language:** speaking English was transcribed
+as Hebrew — faster-whisper auto-detect mis-fires on short clips. Added a ⚙️ **"Voice
+input language"** setting (English / עברית / Auto-detect), default **English**, plumbed
+through `stt.transcribe_pcm(language=…)` (per-session, live-switchable). Forcing the
+language fixes mis-detection AND skips the detect pass. (2) **Latency:** default STT
+model `medium` → **`small`** (~3x faster on CPU; the model is already downloaded, and
+with the language forced it's accurate), and end-of-utterance silence 1.3s → 1.0s for
+a snappier auto-send. Note: the model that gave "Arabic" transcriptions was an
+auto-detect artifact, not `small` itself.
+
+**Files:** `orchestrator/config.py`, `orchestrator/stt.py`, `app.py`.
+
 ### Fixed — ⏹ Stop button now works for `/agent` and `/research`
 
 **What:** The Stop button only cancelled the normal chat turn — `/agent` and

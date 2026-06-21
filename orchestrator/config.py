@@ -251,6 +251,17 @@ VOICE_ECHO_COOLDOWN_S: float = float(os.getenv("ZERO_AGENT_VOICE_ECHO_COOLDOWN_S
 VOICE_WAKE_WORDS: list[str] = [
     w.strip().lower() for w in os.getenv("ZERO_AGENT_VOICE_WAKE_WORDS", "").split(",") if w.strip()
 ]
+# Instant voice: run SPOKEN turns with the thinking block OFF, so Zero answers
+# immediately instead of generating a long reasoning monologue first (the real
+# voice-latency villain). This does NOT swap to a weaker model — the same capable
+# model just replies directly; thinking mostly helps hard multi-step problems,
+# which are rare in conversation. Typed turns keep thinking as configured, so deep
+# reasoning is one keystroke away. Toggle live in ⚙️.
+VOICE_INSTANT: bool = os.getenv("ZERO_AGENT_VOICE_INSTANT", "1").lower() in ("1", "true", "yes")
+# Optional faster model for SPOKEN turns only (empty = keep the active/selected
+# model — recommended, so voice isn't dumber). Set e.g. "qwen3:4b" or "hermes3:8b"
+# to trade a little smarts for an even snappier reply. Typed turns are unaffected.
+VOICE_MODEL: str = os.getenv("ZERO_AGENT_VOICE_MODEL", "").strip()
 
 # --- Self-verification (learn-layer phase 2) --------------------------------
 # After the agent finishes an ACTION task (a turn that used >=1 tool), a strict

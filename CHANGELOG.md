@@ -14,6 +14,22 @@ this file captures the concrete edits between/around those phases.
 
 ## 2026-06-21
 
+### Added — Instant voice: skip the thinking block on spoken turns (the real latency fix)
+
+**What:** The long silence before Zero spoke wasn't the TTS or Chainlit — it was the
+model's **thinking block**: qwen3 with `ENABLE_THINKING` on generates a whole reasoning
+monologue BEFORE the first answer token. Now SPOKEN turns run with `think=False`, so Zero
+answers **immediately**. Crucially this does NOT switch to a weaker model — the same
+capable model just replies directly (thinking mainly helps hard multi-step problems, rare
+in conversation); typed turns keep thinking as configured, so deep reasoning is one
+keystroke away. Wired by threading a `from_voice` flag into `_handle_user_message`, which
+toggles the agent's client (`think`, and optionally `VOICE_MODEL`) for that turn and
+restores it in `finally`. ⚙️ switch **"⚡ Instant voice"** (default on); env
+`ZERO_AGENT_VOICE_INSTANT`, optional `ZERO_AGENT_VOICE_MODEL` for an even faster spoken
+model. The cheap, config-level fix tried BEFORE any heavy GPU voice pipeline.
+
+**Files:** `app.py`, `orchestrator/config.py`.
+
 ### Added — Conversation mode (stage 2): hands-free voice loop + echo suppression + wake word
 
 **What:** Makes the always-on mic a real back-and-forth ("בוקר טוב זירו" → reply →

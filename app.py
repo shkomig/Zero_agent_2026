@@ -319,6 +319,8 @@ async def _init_session(selected: str) -> "tuple[OllamaClient, str] | None":
     cl.user_session.set(
         "voice_wake", list(config.VOICE_WAKE_WORDS) if config.VOICE_WAKE_WORDS else []
     )
+    # Instant voice: spoken turns answer directly (thinking off) for low latency.
+    cl.user_session.set("voice_instant", config.VOICE_INSTANT)
     return client, model
 
 
@@ -367,6 +369,11 @@ async def start() -> None:
                 id="speak",
                 label="🔊 Speak replies (local voice)",
                 initial=cl.user_session.get("tts") or False,
+            ),
+            Switch(
+                id="voice_instant",
+                label="⚡ Instant voice (skip thinking on spoken turns)",
+                initial=cl.user_session.get("voice_instant", config.VOICE_INSTANT),
             ),
             Switch(
                 id="wake_word",
@@ -459,6 +466,19 @@ async def update_settings(settings: dict[str, Any]) -> None:
             cl.user_session.set("stt_lang", code)
             shown = settings.get("voice_lang")
             await cl.Message(content=f"🎤 Voice input language: **{shown}**.").send()
+
+    # --- instant voice (skip thinking on spoken turns) ---
+    if "voice_instant" in settings:
+        want = bool(settings.get("voice_instant"))
+        if want != bool(cl.user_session.get("voice_instant")):
+            cl.user_session.set("voice_instant", want)
+            await cl.Message(
+                content=(
+                    "⚡ Instant voice ON — spoken replies skip the thinking step (snappier)."
+                    if want else
+                    "🧠 Instant voice OFF — spoken replies think first (slower, deeper)."
+                )
+            ).send()
 
     # --- wake word (conversation mode) ---
     if "wake_word" in settings:
@@ -889,7 +909,7 @@ async def on_message(message: cl.Message) -> None:
     await _handle_user_message(message)
 
 
-async def _handle_user_message(message: cl.Message) -> None:
+async def _handle_user_message(message: cl.Message, from_voice: bool = False) -> None:
     agent: BaseAgent | None = cl.user_session.get("agent")
     if agent is None:
         await cl.Message(
@@ -1031,6 +1051,18 @@ async def _handle_user_message(message: cl.Message) -> None:
             thinking_step["step"] = step
         await thinking_step["step"].stream_token(token)
 
+    # Instant voice: for SPOKEN turns, answer directly (thinking block OFF) and
+    # optionally on a faster model — the real fix for the long pre-answer silence.
+    # Same capable model by default (not dumber); restored in `finally`. Typed
+    # turns are untouched. We toggle on the agent's own client (what run() reads).
+    _voice_restore: "tuple[bool, str] | None" = None
+    if from_voice and cl.user_session.get("voice_instant", config.VOICE_INSTANT):
+        _vc = agent.client
+        _voice_restore = (_vc.think, _vc.model)
+        _vc.think = False
+        if config.VOICE_MODEL:
+            _vc.model = config.VOICE_MODEL
+
     started = time.perf_counter()
     # Run the agent as a cancellable task so the user can hit the ⏹ stop button
     # (handled by @cl.on_stop) to abort a long/runaway turn. There is NO time or
@@ -1134,6 +1166,9 @@ async def _handle_user_message(message: cl.Message) -> None:
         )
         await answer_msg.update()
     finally:
+        # Restore the model/thinking we toggled for an instant-voice turn.
+        if _voice_restore is not None:
+            agent.client.think, agent.client.model = _voice_restore
         # Stop any in-flight streaming speech (no-op if it already drained in the
         # success path; on cancel/error this cancels the synth/play workers).
         if voice is not None:
@@ -1410,7 +1445,7 @@ async def _finalize_audio(manual: bool = False) -> None:
         if cmd is None:
             return  # mic on, but this utterance wasn't addressed to Zero — ignore
         await cl.Message(content=cmd, type="user_message").send()
-        await _handle_user_message(cl.Message(content=cmd))
+        await _handle_user_message(cl.Message(content=cmd), from_voice=True)
     finally:
         cl.user_session.set("audio_busy", False)
         # Echo cooldown: keep ignoring the mic briefly so the tail of Zero's own

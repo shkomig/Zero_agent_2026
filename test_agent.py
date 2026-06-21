@@ -80,6 +80,12 @@ async def component_checks() -> None:
         f.write("def x(:\n")
     ok, _ = v.verify_task("Write broken.py", f"saved {bad}", d)
     check("verifier catches a Python syntax error", not ok)
+    # Directory tasks check the DIR, not a file (regression: the audit-task halt).
+    ok, _ = v.verify_task(f"Create the directory {d} with permissions", "done",
+                          cwd=r"C:\unrelated\workspace")
+    check("verifier passes a real directory (not demanding a file)", ok)
+    ok, _ = v.verify_task(f"Create the directory {os.path.join(d, 'ghostdir')}", "done", d)
+    check("verifier catches a missing directory", not ok)
 
     # Injection-defense fence
     check(

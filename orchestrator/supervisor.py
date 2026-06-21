@@ -53,6 +53,16 @@ REPLAN_PROMPT = (
     "then continue). Respond with ONLY a JSON array of strings."
 )
 
+SYNTH_PROMPT = (
+    "You are writing the FINAL DELIVERABLE of a completed multi-step task. Using "
+    "the GOAL and the step results below as your evidence, produce exactly what the "
+    "goal asked for — a complete report / analysis / answer, NOT a status update or "
+    "a list of steps. Follow any structure or sections the goal specified (e.g. "
+    "Executive Summary, Findings, Risks). Base every claim on the step evidence; "
+    "where the evidence is thin or missing, say so honestly rather than inventing. "
+    "Be concrete, organized, and self-contained."
+)
+
 # (kind, payload) — optional progress hook so a UI/CLI can render live status.
 EventCallback = Callable[[str, str], Awaitable[None]]
 
@@ -133,7 +143,18 @@ class Supervisor:
                         if steps:
                             best = steps  # keep scanning; prefer the last valid one
                         break
-        return best
+        if best:
+            return best
+
+        # Fallback: the model returned a NUMBERED or BULLETED list instead of JSON
+        # (common when a goal is long/complex). Salvage step lines so a one-off
+        # format slip doesn't abort the whole run.
+        lines: list[str] = []
+        for ln in cleaned.splitlines():
+            m = re.match(r"""\s*(?:\d+[.)]|[-*•])\s+["']?(.+?)["']?,?\s*$""", ln)
+            if m and len(m.group(1).strip()) > 3:
+                lines.append(m.group(1).strip())
+        return lines or None
 
     async def _ask_planner(self, system: str, user: str) -> list[str] | None:
         try:
@@ -152,6 +173,15 @@ class Supervisor:
     async def plan_goal(self, user_goal: str) -> bool:
         await self._emit("planning", user_goal)
         plan = await self._ask_planner(PLANNER_PROMPT, f"GOAL: {user_goal}")
+        if not plan:
+            # One retry — a cold-loaded model or a one-off non-JSON reply usually
+            # succeeds the second time. Add an explicit format nudge.
+            await self._emit("planning", "retrying plan…")
+            plan = await self._ask_planner(
+                PLANNER_PROMPT
+                + '\nReturn ONLY a JSON array, e.g. ["Step 1", "Step 2"]. No prose.',
+                f"GOAL: {user_goal}\n\nBreak this into 3-8 concrete, ordered steps.",
+            )
         if not plan:
             await self._emit("error", "could not produce a valid plan")
             return False
@@ -247,8 +277,50 @@ class Supervisor:
             "steps verified. See task state for details."
         )
 
+    async def _synthesize_deliverable(self, goal: str) -> str:
+        """Write the FINAL deliverable from the completed step results — the actual
+        report/answer the goal asked for, not just a "steps done" status line.
+
+        This is what turns an audit/analysis/research goal into the report the user
+        wanted (the step results hold the evidence; here we synthesize them)."""
+        done = [
+            (t.description, (t.result or "").strip())
+            for t in self.task_manager.state.plan
+            if t.status.value == "completed" and (t.result or "").strip()
+        ]
+        if not done:
+            return ""
+        evidence = "\n\n".join(f"### Step: {d}\n{r[:1800]}" for d, r in done)
+        evidence = evidence[: config.RESEARCH_SYNTH_MAX_CHARS]
+        try:
+            resp = await self.planner.chat(
+                [
+                    {"role": "system", "content": SYNTH_PROMPT},
+                    {"role": "user", "content":
+                        f"GOAL:\n{goal}\n\nWORK COMPLETED — step results (your evidence):\n{evidence}"},
+                ],
+                tools=None,
+            )
+        except OllamaError as exc:
+            await self._emit("error", f"final synthesis failed: {exc}")
+            return ""
+        return (resp.message.content or "").strip()
+
     async def run_goal(self, user_goal: str) -> str:
-        """Convenience: plan then execute. Returns a final status string."""
+        """Plan → execute → SYNTHESIZE the final deliverable. Returns the report
+        (or a status string if there was nothing to synthesize)."""
         if not await self.plan_goal(user_goal):
-            return "Could not create a plan for this goal."
-        return await self.execute_plan()
+            return (
+                "⚠️ I couldn't break this into a plan — the planner model returned an "
+                "unparseable response (this can happen on a cold start or with a very "
+                "long goal). Please try again, or shorten/scope the goal."
+            )
+        status = await self.execute_plan()
+        await self._emit("synthesizing", "writing the final deliverable")
+        report = await self._synthesize_deliverable(user_goal)
+        if not report:
+            return status
+        # Prepend a one-line note if the run only partially succeeded.
+        if not self.task_manager.all_succeeded():
+            return f"_⚠️ {status}_\n\n{report}"
+        return report

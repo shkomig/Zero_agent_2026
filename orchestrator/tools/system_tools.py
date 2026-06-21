@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import locale
+import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -99,6 +101,28 @@ _SERVER_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 )
 
 
+def _kill_process_tree(proc: "subprocess.Popen") -> None:
+    """Kill a timed-out command AND all of its descendants, so a grandchild
+    holding the output pipe can't block the agent forever."""
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def _decode(raw: bytes | None) -> str:
     """Decode shell output bytes without ever raising.
 
@@ -177,23 +201,44 @@ def execute_terminal_command(command: str) -> str:
                 f"(Matched server pattern in: {command!r}.)"
             )
 
+    # Launch in its OWN process group/session so that on timeout we can kill the
+    # WHOLE tree. subprocess.run(timeout=) only kills the direct child; a grandchild
+    # (e.g. a PowerShell command that spawns wmic) keeps the stdout pipe open and
+    # communicate() blocks FOREVER past the timeout — the "agent hung on step N,
+    # GPU idle, model unloaded" failure. Raw bytes (no text=True): we decode safely.
+    win = sys.platform == "win32"
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if win else 0
     try:
-        # Capture raw bytes (no text=True): letting subprocess decode would use
-        # the Windows locale codepage (e.g. cp1255 Hebrew) and crash on any byte
-        # outside that map. We decode ourselves, safely, below.
-        completed = subprocess.run(
+        proc = subprocess.Popen(  # noqa: S602 - intentional shell command
             command,
             shell=True,
-            capture_output=True,
-            timeout=config.TERMINAL_TIMEOUT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=creationflags,
+            start_new_session=not win,
         )
+    except OSError as exc:
+        return f"Error: could not run command {command!r}: {type(exc).__name__}: {exc}"
+
+    try:
+        raw_out, raw_err = proc.communicate(timeout=config.TERMINAL_TIMEOUT)
+        returncode = proc.returncode
     except subprocess.TimeoutExpired:
-        return f"Error: command timed out after {config.TERMINAL_TIMEOUT}s: {command!r}"
+        _kill_process_tree(proc)
+        try:
+            raw_out, raw_err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            raw_out, raw_err = b"", b""
+        return (
+            f"Error: command timed out after {config.TERMINAL_TIMEOUT}s and was "
+            f"killed along with its child processes: {command!r}. For anything "
+            "long-running use launch_program instead."
+        )
 
-    stdout = _decode(completed.stdout).strip()
-    stderr = _decode(completed.stderr).strip()
+    stdout = _decode(raw_out).strip()
+    stderr = _decode(raw_err).strip()
 
-    parts = [f"exit_code: {completed.returncode}"]
+    parts = [f"exit_code: {returncode}"]
     if stdout:
         parts.append(f"stdout:\n{stdout}")
     if stderr:

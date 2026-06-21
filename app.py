@@ -182,9 +182,17 @@ def _make_tool_callbacks() -> tuple[Any, Any, list[Any]]:
 def _make_approver():
     """Build an `on_approval(name, args)` callback that asks the user Approve/Deny
     before a destructive tool runs (HITL). Deny on timeout — in an interactive UI,
-    no answer means "don't do it"."""
+    no answer means "don't do it".
+
+    Supports "✅ Approve all": once clicked, a session flag auto-approves every
+    later gated tool for the rest of the session (no more prompts). Reset by
+    starting a new chat (safety re-arms) or `/hitl on`.
+    """
 
     async def on_approval(name: str, args: "dict[str, Any] | str") -> bool:
+        # "Approve all" already chosen this session → don't prompt again.
+        if cl.user_session.get("hitl_approve_all"):
+            return True
         try:
             args_str = (
                 args if isinstance(args, str)
@@ -198,16 +206,23 @@ def _make_approver():
             content=f"⚠️ The agent wants to run **`{name}`**:\n```\n{args_str}\n```\nApprove this action?",
             actions=[
                 cl.Action(name="approve", payload={"decision": "approve"}, label="✅ Approve"),
+                cl.Action(name="approve_all", payload={"decision": "approve_all"},
+                          label="✅✅ Approve all (this session)"),
                 cl.Action(name="deny", payload={"decision": "deny"}, label="🚫 Deny"),
             ],
             timeout=120,
         ).send()
         if not res:
             return False  # timeout / dismissed → deny
-        return (
-            res.get("payload", {}).get("decision") == "approve"
-            or res.get("name") == "approve"
-        )
+        decision = res.get("payload", {}).get("decision") or res.get("name")
+        if decision == "approve_all":
+            cl.user_session.set("hitl_approve_all", True)
+            await cl.Message(
+                content="✅ Approvals are now automatic for the rest of this session. "
+                "Start a new chat (or `/hitl on`) to re-enable prompts."
+            ).send()
+            return True
+        return decision == "approve"
 
     return on_approval
 
@@ -677,6 +692,9 @@ async def _handle_agent_command(text: str) -> bool:
             task_list.status = f"Replanning ({payload})…"
             await task_list.send()
             await cl.Message(content=f"🔄 Replanning: {payload}").send()
+        elif kind == "synthesizing":
+            task_list.status = "Writing final report…"
+            await task_list.send()
         elif kind == "error":
             await cl.Message(content=f"⚠️ {payload}").send()
 
@@ -824,6 +842,22 @@ async def _handle_user_message(message: cl.Message) -> None:
     # Show what the agent has learned from its mistakes (phase 3: transparency).
     if message.content.strip().lower() == "/lessons":
         await cl.Message(content=lessons.list_lessons(get_store())).send()
+        return
+
+    # HITL control: `/hitl off` = approve everything this session (no prompts);
+    # `/hitl on` = re-enable the Approve/Deny prompt; `/hitl` shows the state.
+    low = message.content.strip().lower()
+    if low.startswith("/hitl"):
+        arg = low[len("/hitl"):].strip()
+        if arg == "off":
+            cl.user_session.set("hitl_approve_all", True)
+            await cl.Message(content="🔓 HITL off — destructive actions auto-approved this session.").send()
+        elif arg == "on":
+            cl.user_session.set("hitl_approve_all", False)
+            await cl.Message(content="🔒 HITL on — I'll ask before destructive actions.").send()
+        else:
+            state = "OFF (auto-approving)" if cl.user_session.get("hitl_approve_all") else "ON (prompting)"
+            await cl.Message(content=f"HITL is **{state}**. Use `/hitl off` to stop prompts, `/hitl on` to resume.").send()
         return
 
     # Multi-step autonomous goal: Supervisor-Worker loop with a live TaskList.

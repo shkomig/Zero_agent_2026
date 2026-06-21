@@ -14,6 +14,94 @@ this file captures the concrete edits between/around those phases.
 
 ## 2026-06-21
 
+### Fixed — "Could not create a plan" robustness (planner retry + list fallback)
+
+**What:** A `/agent` goal sometimes failed instantly with "Could not create a plan"
+— the planner's reply didn't parse as a JSON array (a cold-loaded model or a one-off
+format slip on a long goal). Hardened `Supervisor`: (1) `plan_goal` now RETRIES once
+with an explicit "JSON array only" nudge; (2) `_parse_json_array` falls back to
+salvaging a NUMBERED or BULLETED list when no JSON array is present, so a format slip
+doesn't abort the run; (3) a clearer user-facing message when planning truly fails
+("cold start or very long goal — try again / shorten it"). Verified: JSON, numbered,
+and bulleted replies all parse; pure prose still returns no plan; eval 18/18.
+
+**Files:** `orchestrator/supervisor.py`.
+
+### Fixed — `execute_terminal_command` could hang the agent forever (process-tree kill on timeout)
+
+**What:** A `/agent` audit froze at a step for over an hour — GPU idle, model
+unloaded, task state not advancing. Root cause: `execute_terminal_command` used
+`subprocess.run(timeout=…)`, which on timeout kills only the DIRECT child. A
+PowerShell command that spawns a grandchild (wmic, a scan, etc.) leaves the
+grandchild holding the stdout pipe, so `communicate()` blocks **forever** past the
+20s timeout → the worker's tool call never returns → the whole run hangs. Now the
+command is launched in its own process group/session (`CREATE_NEW_PROCESS_GROUP` /
+`start_new_session`) and on timeout the WHOLE tree is killed (`taskkill /T` on
+Windows, `os.killpg` on Unix) before draining. Verified: a 40s command with a 3s
+timeout now returns in ~3.1s with a clear "timed out and killed" message instead of
+hanging.
+
+**Files:** `orchestrator/tools/system_tools.py`.
+
+### Added — Supervisor synthesizes a final DELIVERABLE (not just a status line)
+
+**What:** A `/agent` audit goal ran all steps successfully but the user only got
+`✅ All tasks completed and verified` — the actual report (Executive Summary, Risks,
+Findings…) was never produced. The Supervisor executed steps and stored each
+worker result, but `run_goal` returned a status string; for analysis/audit/research
+goals the deliverable IS a synthesized report. Added `Supervisor._synthesize_deliverable`:
+after the plan finishes, it feeds the goal + all completed step results to the
+planner model with `SYNTH_PROMPT` and returns the actual report (honouring any
+structure the goal asked for, grounding claims in the step evidence). `run_goal`
+now returns that report (status string only as a fallback / partial-run note); the
+UI shows a "Writing final report…" status. Verified: a 2-step audit produced a
+proper "Executive Summary / Findings / Risks" report from the step evidence.
+
+**Files:** `orchestrator/supervisor.py`, `app.py`.
+
+### Fixed — RealityVerifier crash on a non-UTF-8 file (UnicodeDecodeError killed the run)
+
+**What:** A `/agent` audit run died with `UnicodeDecodeError: 'utf-8' codec can't
+decode byte 0x96…`. Root cause: `reality_verifier._check_file` validated a `.json`
+with a strict UTF-8 `open()` and only caught `OSError`/`json.JSONDecodeError` —
+`UnicodeDecodeError` (a `ValueError`) escaped. The verifier is called **directly by
+the Supervisor** (not via the registry, which wraps tool errors), so the exception
+crashed the whole run when the audit happened to touch a cp1252-encoded `.json`.
+Two-layer fix: (1) a top-level guard so `verify_task` **NEVER raises** — any internal
+error is swallowed as a PASS; (2) the `.json` check treats a non-UTF-8 file as
+"exists, not deep-validated" instead of crashing. Verified: a `.json` containing
+byte 0x96 now returns a tuple (no crash); eval 18/18.
+
+**Files:** `orchestrator/reality_verifier.py`.
+
+### Fixed — RealityVerifier false-failure on directory tasks (the audit-task halt)
+
+**What:** A `/agent` system-audit goal halted at step 2 ("create the directory
+C:\ai_audit_logs") even though the worker HAD created it (`exit_code:0`). Root
+cause was a bug in `reality_verifier.py`: (1) it treated "create **directory**" as
+"create file" and demanded a file, and (2) it resolved incidental file names from
+the result against `cwd=data/workspace` instead of the task's absolute path — so a
+successful mkdir was falsely reported as failed → 3 replans → halt. The verifier
+meant to catch hallucinated success was instead causing false *failures*, blocking
+legitimate work. Added directory-awareness: when the task mentions directory/folder/
+mkdir, extract the absolute dir path and check `os.path.isdir` (honoring absolute
+paths), instead of looking for files. File-creation checks are unchanged.
+Regression-tested in `test_agent.py` (real dir → pass, missing dir → fail, files
+unchanged) — eval 18/18.
+
+**Files:** `orchestrator/reality_verifier.py`, `test_agent.py`.
+
+### Added — HITL "Approve all" + `/hitl` toggle (less prompt fatigue)
+
+**What:** Clicking approve on every step of a multi-step `/agent` task was tedious.
+The HITL prompt now has a third button **"✅✅ Approve all (this session)"** — once
+clicked, a session flag auto-approves every later gated tool with no more prompts.
+Plus a `/hitl off` (stop prompting), `/hitl on` (resume), and bare `/hitl` (show
+state) command. Re-arms on a new chat (safety default). For a permanent default,
+`ZERO_AGENT_HITL=0` still disables the gate entirely.
+
+**Files:** `app.py`.
+
 ### Changed — cleaner welcome screen
 
 **What:** The welcome message dumped all ~33 tool names as a wall of text. Replaced

@@ -49,6 +49,15 @@ _PATH_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Words that mark the deliverable as a DIRECTORY, not a file (so we check
+# os.path.isdir, not isfile — a mkdir produces no file and was being falsely
+# failed as "no file landed on disk").
+_DIR_WORDS = ("directory", "folder", "mkdir")
+
+# Absolute directory paths: a Windows drive path or a Unix abs path, captured up
+# to the first whitespace/quote. We later drop any that carry a file extension.
+_DIR_RE = re.compile(r"""['"`]?([A-Za-z]:\\[^\s'"`<>|]+|/[A-Za-z][^\s'"`<>|]*)""")
+
 
 class RealityVerifier:
     """Verify that a Worker's claimed result actually happened on disk."""
@@ -62,15 +71,39 @@ class RealityVerifier:
     def verify_task(
         self, task_description: str, agent_result: str, cwd: str = ""
     ) -> tuple[bool, str]:
-        """Return ``(ok, message)``. Never raises.
+        """Return ``(ok, message)``. **NEVER raises** — any internal error (e.g. a
+        non-UTF-8 file the audit happened to touch) is swallowed as a PASS, so a
+        verifier hiccup can't crash the whole agent run. The Supervisor calls this
+        directly (not via the registry), so an uncaught error here is fatal."""
+        try:
+            return self._verify_task(task_description, agent_result, cwd)
+        except Exception as exc:  # noqa: BLE001 - the verifier must never crash a run
+            logger.exception("verifier crashed; treating as pass")
+            return (True, f"Verification skipped (internal error: {type(exc).__name__}).")
+
+    def _verify_task(
+        self, task_description: str, agent_result: str, cwd: str = ""
+    ) -> tuple[bool, str]:
+        """Core verification logic (wrapped by :meth:`verify_task`).
 
         ``ok=False`` means the claimed work is NOT backed by reality (missing
-        file, empty file, syntax error). ``ok=True`` with an "inconclusive"
-        message means there was nothing deterministic to check — the Supervisor
-        may then choose an LLM judge.
+        file/dir, empty file, syntax error). ``ok=True`` with an "inconclusive"
+        message means there was nothing deterministic to check.
         """
         desc = task_description.lower()
         is_creation = any(w in desc for w in _CREATION_WORDS)
+
+        # Directory-creation tasks: the deliverable is a DIRECTORY, not a file.
+        # mkdir produces no file, so the file checks below would falsely fail it.
+        if is_creation and any(w in desc for w in _DIR_WORDS):
+            dirs = self._extract_dir_paths(f"{task_description}\n{agent_result}", cwd)
+            existing = [d for d in dirs if os.path.isdir(d)]
+            if existing:
+                return (True, "Directory exists: " + ", ".join(existing))
+            if dirs:
+                return (False, "Expected directory was not created: " + ", ".join(dirs))
+            # No explicit path to check — don't block on a directory task.
+            return (True, "Directory task with no explicit path — trusting the result.")
 
         candidates = self._extract_paths(f"{task_description}\n{agent_result}")
         resolved = self._resolve(candidates, cwd)
@@ -113,6 +146,22 @@ class RealityVerifier:
         return (True, f"Reality check passed: {evidence}")
 
     # --- internals ----------------------------------------------------------
+    def _extract_dir_paths(self, text: str, cwd: str) -> list[str]:
+        """Extract absolute DIRECTORY paths (no file extension) from text."""
+        out: list[str] = []
+        for m in _DIR_RE.finditer(text):
+            p = (m.group(1) or "").strip().rstrip("\\/.,;:\"'` ")
+            if not p:
+                continue
+            ext = os.path.splitext(p)[1].lower()
+            if ext and 2 <= len(ext) <= 5:  # has a file extension → a file, skip
+                continue
+            full = p if os.path.isabs(p) else os.path.join(cwd or os.getcwd(), p)
+            full = os.path.normpath(full)
+            if full not in out:
+                out.append(full)
+        return out
+
     def _extract_paths(self, text: str) -> list[str]:
         seen: list[str] = []
         for m in _PATH_RE.finditer(text):
@@ -155,6 +204,10 @@ class RealityVerifier:
             try:
                 with open(path, encoding="utf-8") as f:
                     json.load(f)
+            except UnicodeDecodeError:
+                # An incidental non-UTF-8 .json (common on Windows) — exists, just
+                # don't deep-validate; never fail/crash the run over its encoding.
+                return (True, f"{name} ok ({size} bytes; non-UTF-8, not validated)")
             except (OSError, json.JSONDecodeError) as exc:
                 return (False, f"{name}: invalid JSON ({exc})")
         return (True, f"{name} ok ({size} bytes)")

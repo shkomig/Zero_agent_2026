@@ -985,8 +985,14 @@ async def _handle_user_message(message: cl.Message) -> None:
     answer_msg.parent_id = None
     await answer_msg.send()
 
+    # Streaming voice OUT: if "🔊 Speak replies" is on, speak each sentence as it
+    # streams (real-time feel) instead of synthesizing the whole reply at the end.
+    voice = _VoiceStreamer() if cl.user_session.get("tts") else None
+
     async def on_token(token: str) -> None:
         await answer_msg.stream_token(token)
+        if voice is not None:
+            voice.feed(token)
 
     # Reasoning ("thinking") from qwen3-style models streams into a collapsible
     # step so the user sees the model working without cluttering the answer.
@@ -1032,20 +1038,22 @@ async def _handle_user_message(message: cl.Message) -> None:
         # spawn two players (so pausing one left the other audible).
         elements = list(media) if media else []
 
-        # Speak the reply (local voice) if enabled. Synthesis runs in a worker
-        # thread and never raises; on any failure we just skip the audio.
-        if cl.user_session.get("tts") and answer:
-            wav = os.path.join(config.TTS_OUTPUT_DIR, f"reply_{uuid.uuid4().hex[:8]}.wav")
-            audio_path = await tts.synthesize(answer, wav)
-            if audio_path:
-                elements.append(
-                    cl.Audio(
-                        path=str(audio_path),
-                        name="reply.wav",
-                        display="inline",
-                        auto_play=True,
+        # Speak the reply (local voice) if enabled. Preferred path: the streaming
+        # speaker already voiced each sentence live — just wait for it to drain.
+        # Fallback: if nothing streamed (e.g. a non-streaming code path), synthesize
+        # the whole answer at the end as before. Never raises.
+        if voice is not None:
+            await voice.finish()
+            if not voice.spoke and answer:
+                wav = os.path.join(config.TTS_OUTPUT_DIR, f"reply_{uuid.uuid4().hex[:8]}.wav")
+                audio_path = await tts.synthesize(answer, wav)
+                if audio_path:
+                    elements.append(
+                        cl.Audio(
+                            path=str(audio_path), name="reply.wav",
+                            display="inline", auto_play=True,
+                        )
                     )
-                )
 
         if elements:
             answer_msg.elements = elements
@@ -1100,6 +1108,10 @@ async def _handle_user_message(message: cl.Message) -> None:
         )
         await answer_msg.update()
     finally:
+        # Stop any in-flight streaming speech (no-op if it already drained in the
+        # success path; on cancel/error this cancels the synth/play workers).
+        if voice is not None:
+            await voice.aclose()
         cl.user_session.set("run_task", None)
 
 
@@ -1116,6 +1128,127 @@ async def stop_running() -> None:
     if run_task is not None and not run_task.done():
         logging.getLogger("zero_agent.ui").info("user requested stop — cancelling turn")
         run_task.cancel()
+
+
+# --- Streaming voice OUT (Stage 1 of conversation mode) ---------------------
+# Speak the answer sentence-by-sentence AS it streams, instead of synthesizing
+# the whole reply only after the LLM finishes. This is what cuts the long silence
+# before Zero starts talking and makes voice feel "real-time" / GPT-like.
+#
+# Two stages overlap: a synth worker runs AHEAD (Kokoro is faster-than-realtime),
+# filling a small audio queue; a play worker emits each segment as an auto-playing
+# audio chip and paces by the clip's real duration so segments don't overlap, then
+# removes the chip to keep the thread clean.
+
+# A sentence ends at . ! ? … (or the Hebrew sof-pasuq ׃) followed by space/end, or
+# a newline. We also force a break on a very long run so a comma-less ramble still
+# starts speaking promptly.
+_SENT_END = re.compile(r"[.!?…׃]\s|\n")
+
+
+def _take_sentence(buf: str) -> tuple[str | None, str]:
+    """Pull the first complete sentence from ``buf``; return (sentence, rest)."""
+    m = _SENT_END.search(buf)
+    if m:
+        cut = m.end()
+        return buf[:cut].strip(), buf[cut:]
+    if len(buf) > 220:  # no boundary yet — break on a space to avoid mid-word
+        sp = buf.rfind(" ", 0, 220)
+        if sp > 40:
+            return buf[:sp].strip(), buf[sp:]
+    return None, buf
+
+
+class _VoiceStreamer:
+    """Speak streamed answer text sentence-by-sentence (skips fenced code)."""
+
+    def __init__(self) -> None:
+        self._raw = ""            # un-parsed tokens (for code-fence handling)
+        self._buf = ""            # speakable text awaiting a sentence boundary
+        self._in_code = False
+        self.spoke = False        # True once at least one segment was queued
+        self._text_q: asyncio.Queue = asyncio.Queue()
+        self._audio_q: asyncio.Queue = asyncio.Queue()
+        self._synth = asyncio.create_task(self._synth_loop())
+        self._play = asyncio.create_task(self._play_loop())
+
+    def feed(self, token: str) -> None:
+        """Called on every answer token. Never raises (voice must not break a turn)."""
+        try:
+            self._raw += token
+            # Route text around fenced code blocks (don't read ``` code aloud).
+            while True:
+                idx = self._raw.find("```")
+                if self._in_code:
+                    if idx == -1:
+                        self._raw = ""  # still inside code -> discard this chunk
+                        break
+                    self._raw = self._raw[idx + 3:]
+                    self._in_code = False
+                    continue
+                if idx == -1:
+                    self._buf += self._raw
+                    self._raw = ""
+                    break
+                self._buf += self._raw[:idx]
+                self._raw = self._raw[idx + 3:]
+                self._in_code = True
+            # Drain any complete sentences now in the speakable buffer.
+            while True:
+                sent, rest = _take_sentence(self._buf)
+                if sent is None:
+                    break
+                self._buf = rest
+                if sent.strip():
+                    self.spoke = True
+                    self._text_q.put_nowait(sent.strip())
+        except Exception:  # noqa: BLE001
+            logging.getLogger("zero_agent.tts").exception("voice feed failed")
+
+    async def _synth_loop(self) -> None:
+        while True:
+            sent = await self._text_q.get()
+            if sent is None:
+                await self._audio_q.put(None)
+                return
+            wav = os.path.join(config.TTS_OUTPUT_DIR, f"seg_{uuid.uuid4().hex[:8]}.wav")
+            res = await tts.synthesize_segment(sent, wav)
+            if res:
+                await self._audio_q.put(res)
+
+    async def _play_loop(self) -> None:
+        while True:
+            item = await self._audio_q.get()
+            if item is None:
+                return
+            path, dur = item
+            seg = cl.Message(
+                content="",
+                author="🔊",
+                elements=[cl.Audio(path=str(path), display="inline", auto_play=True)],
+            )
+            await seg.send()
+            await asyncio.sleep(dur + 0.05)  # let it finish before the next starts
+            try:
+                await seg.remove()  # keep the thread clean (it already played)
+            except Exception:  # noqa: BLE001
+                pass
+
+    async def finish(self) -> None:
+        """Flush the tail, then wait for all queued speech to finish playing."""
+        if not self._in_code and self._buf.strip():
+            self.spoke = True
+            self._text_q.put_nowait(self._buf.strip())
+        self._buf = ""
+        await self._text_q.put(None)
+        await asyncio.gather(self._synth, self._play, return_exceptions=True)
+
+    async def aclose(self) -> None:
+        """Stop speaking NOW (user hit stop / a turn errored). Cancels the workers."""
+        for t in (self._synth, self._play):
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(self._synth, self._play, return_exceptions=True)
 
 
 # --- Voice input (Stage 2): mic → local Whisper → normal message flow -------

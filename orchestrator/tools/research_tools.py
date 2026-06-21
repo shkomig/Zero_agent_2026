@@ -38,7 +38,13 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger("zero_agent.research")
 
-_UA = "Mozilla/5.0 (compatible; ZeroAgent/0.1; +local)"
+# Wikimedia (and most APIs) BLOCK browser-spoofing UAs ("Mozilla/5.0 (compatible;…)")
+# with 403. Their User-Agent policy requires a descriptive bot UA with real contact
+# info (project URL + email). This is the compliant form.
+_UA = (
+    "ZeroAgent/0.1 (https://github.com/shkomig/Zero_agent_2026; "
+    "haiatia132@gmail.com) httpx"
+)
 
 # --- Source-quality tiering (lightweight, local, deterministic) --------------
 # A domain-based provenance signal so the model can CALIBRATE: weight PRIMARY

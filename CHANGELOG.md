@@ -14,6 +14,44 @@ this file captures the concrete edits between/around those phases.
 
 ## 2026-06-21
 
+### Added — Streaming voice OUT (conversation mode, stage 1): Zero speaks as it streams
+
+**What:** Real-time voice feel. Until now the reply was synthesized as ONE clip only
+**after** the whole answer finished — a long silence before Zero talked. New
+`_VoiceStreamer` (in `app.py`) speaks the answer **sentence-by-sentence as it streams**:
+it splits the token stream on sentence boundaries (`. ! ? … ׃` / newline), runs a synth
+worker AHEAD of a play worker (Kokoro is faster-than-realtime) so segments queue up, and
+paces playback by each clip's **real duration** so they don't overlap — then removes the
+spent audio chip to keep the thread clean. Skips fenced code (won't read ``` aloud),
+falls back to whole-answer synthesis if nothing streamed, and `aclose()` cancels the
+workers on Stop/error so speech halts immediately. Backed by new
+`tts.synthesize_segment(text, out)` → `(path, duration_s)`. The biggest lever toward a
+GPT-style live voice conversation; stages 2–3 (hands-free loop + wake word, barge-in)
+are next.
+
+**Files:** `app.py`, `orchestrator/tts.py`.
+
+### Fixed — graphify tool now reads the current `_docs_and_graph` output folder
+
+**What:** Newer graphify writes its graph into `<project>/_docs_and_graph/`, but
+`graphify_project` still looked in the old `graphify-out/` — so it reported wrong paths
+and failed its `graph.html` existence check. Now `_out_dir()` prefers whichever folder
+exists (`_docs_and_graph`, else `graphify-out`) and defaults a fresh build to the new
+name. The tool docstring also tells the model to call it on "update / graphify / refresh
+the graph of folder X", so a plain spoken/typed request routes to it.
+
+**Files:** `orchestrator/tools/graph_tools.py`.
+
+### Fixed — Wikipedia 403 (research): Wikimedia-policy-compliant User-Agent
+
+**What:** `search_wikipedia` got `403 Forbidden` on every call — the UA spoofed a
+browser (`Mozilla/5.0 (compatible; …; +local)`), which Wikimedia's User-Agent policy
+blocks. Replaced with a descriptive bot UA carrying real contact info (project URL +
+email). Research silently lost its best PRIMARY source; now restored (verified: 4
+articles returned, no 403).
+
+**Files:** `orchestrator/tools/research_tools.py`.
+
 ### Improved — voice input: faster + correct language (English heard as Hebrew, ~5s lag)
 
 **What:** Two real STT pain points. (1) **Language:** speaking English was transcribed

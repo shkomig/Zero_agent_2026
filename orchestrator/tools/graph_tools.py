@@ -28,6 +28,18 @@ _PY_CANDIDATES = (
 )
 _GRAPHIFY_PY: str | None = None
 
+# graphify writes its output into a folder inside the project. Newer versions use
+# `_docs_and_graph`; older ones used `graphify-out`. Prefer whichever already
+# exists; otherwise default to the current name so a fresh build lands there.
+_OUT_NAMES = ("_docs_and_graph", "graphify-out")
+
+
+def _out_dir(proj: Path) -> Path:
+    for name in _OUT_NAMES:
+        if (proj / name).is_dir():
+            return proj / name
+    return proj / _OUT_NAMES[0]
+
 
 def _find_graphify_python() -> str | None:
     global _GRAPHIFY_PY
@@ -57,9 +69,11 @@ def graphify_project(path: str, mode: str = "code", timeout_s: int = 0) -> str:
     """Build a navigable knowledge graph of a LOCAL project folder with graphify.
 
     Produces graph.html (interactive), GRAPH_REPORT.md (god nodes, communities,
-    suggested questions), and graph.json inside ``<path>/graphify-out/``. Runs
+    suggested questions), and graph.json inside ``<path>/_docs_and_graph/``. Runs
     100% locally. Use this to map the architecture of THIS project or any other
-    local project on the machine.
+    local project on the machine. Call this whenever the user asks to "update the
+    graph / docs of folder X", "graphify X", or "refresh the knowledge graph of
+    X" — ``path`` is that folder; ``update`` is incremental (only changed files).
 
     Args:
         path: Absolute path to the project folder to analyze.
@@ -108,7 +122,7 @@ def graphify_project(path: str, mode: str = "code", timeout_s: int = 0) -> str:
                 f"graphify ({mode}) timed out after {timeout}s on {proj}. "
                 "Full/semantic mode on a local model is slow — try mode='code', a "
                 "smaller folder, or a larger timeout_s. Partial output may exist in "
-                f"{proj / 'graphify-out'}."
+                f"{_out_dir(proj)}."
             )
         except OSError as exc:
             return f"Error launching graphify: {type(exc).__name__}: {exc}"
@@ -119,7 +133,7 @@ def graphify_project(path: str, mode: str = "code", timeout_s: int = 0) -> str:
                 + (r.stderr or r.stdout or "")[-900:]
             )
 
-    outdir = proj / "graphify-out"
+    outdir = _out_dir(proj)
     html = outdir / "graph.html"
     if not html.exists():
         return (

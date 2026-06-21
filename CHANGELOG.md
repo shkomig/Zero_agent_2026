@@ -14,6 +14,21 @@ this file captures the concrete edits between/around those phases.
 
 ## 2026-06-21
 
+### Added — Conversation mode (stage 2): hands-free voice loop + echo suppression + wake word
+
+**What:** Makes the always-on mic a real back-and-forth ("בוקר טוב זירו" → reply →
+you speak again), no button per line. The essential fix is **echo suppression**:
+`on_audio_chunk` now DROPS mic input while Zero is thinking/speaking (`audio_busy`) and
+for a short **cooldown** after (`VOICE_ECHO_COOLDOWN_S`, default 0.6 s), so Zero never
+transcribes — and replies to — its own voice (the infinite self-trigger that breaks
+naive hands-free). Optional **wake word**: a ⚙️ switch (`🗣️ Wake word`) gates utterances
+so Zero only acts when addressed (default forms "זירו" / "zero"; env
+`ZERO_AGENT_VOICE_WAKE_WORDS` overrides), stripping the wake word before the agent sees
+the command; off by default = every spoken line is a turn. Builds directly on stage-1
+streaming voice. Stage 3 (barge-in — interrupt Zero mid-sentence) is the remaining piece.
+
+**Files:** `app.py`, `orchestrator/config.py`.
+
 ### Added — Streaming voice OUT (conversation mode, stage 1): Zero speaks as it streams
 
 **What:** Real-time voice feel. Until now the reply was synthesized as ONE clip only

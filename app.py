@@ -88,6 +88,10 @@ _VOICE_LANGS: "dict[str, str]" = {"English": "en", "עברית": "he", "Auto-det
 _VOICE_LANG_LABELS = list(_VOICE_LANGS)
 _DEFAULT_STT_LANG = "en"
 
+# Wake words used when the ⚙️ "Wake word" switch is ON (Hebrew + English forms of
+# "Zero"). Env ZERO_AGENT_VOICE_WAKE_WORDS overrides the default set at startup.
+_DEFAULT_WAKE = config.VOICE_WAKE_WORDS or ["זירו", "zero"]
+
 
 def _voice_lang_index(code: "str | None") -> int:
     code = (code or _DEFAULT_STT_LANG)
@@ -310,6 +314,11 @@ async def _init_session(selected: str) -> "tuple[OllamaClient, str] | None":
     # Voice-input language default (overridable in ⚙️). English by default since
     # auto-detect was mis-hearing English as Hebrew.
     cl.user_session.set("stt_lang", config.STT_LANGUAGE or _DEFAULT_STT_LANG)
+    # Wake word (conversation mode): on only if configured at startup, else off
+    # (every spoken utterance is a turn). Toggle live in ⚙️.
+    cl.user_session.set(
+        "voice_wake", list(config.VOICE_WAKE_WORDS) if config.VOICE_WAKE_WORDS else []
+    )
     return client, model
 
 
@@ -358,6 +367,11 @@ async def start() -> None:
                 id="speak",
                 label="🔊 Speak replies (local voice)",
                 initial=cl.user_session.get("tts") or False,
+            ),
+            Switch(
+                id="wake_word",
+                label='🗣️ Wake word ("זירו …") — only reply when addressed',
+                initial=bool(cl.user_session.get("voice_wake")),
             ),
             Select(
                 id="voice_lang",
@@ -445,6 +459,18 @@ async def update_settings(settings: dict[str, Any]) -> None:
             cl.user_session.set("stt_lang", code)
             shown = settings.get("voice_lang")
             await cl.Message(content=f"🎤 Voice input language: **{shown}**.").send()
+
+    # --- wake word (conversation mode) ---
+    if "wake_word" in settings:
+        want = bool(settings.get("wake_word"))
+        if want != bool(cl.user_session.get("voice_wake")):
+            cl.user_session.set("voice_wake", list(_DEFAULT_WAKE) if want else [])
+            await cl.Message(
+                content=(
+                    '🗣️ Wake word ON — I\'ll only reply when you say "זירו".'
+                    if want else "🗣️ Wake word OFF — every spoken line is a turn."
+                )
+            ).send()
 
 
 # UI notices emitted as assistant messages (welcome banner, "model switched",
@@ -1271,12 +1297,25 @@ async def on_audio_start() -> bool:
     cl.user_session.set("audio_speech_s", 0.0)
     cl.user_session.set("audio_silence_s", 0.0)
     cl.user_session.set("audio_busy", False)
+    cl.user_session.set("audio_mute_until", 0.0)
     return True
 
 
 @cl.on_audio_chunk
 async def on_audio_chunk(chunk: "cl.InputAudioChunk") -> None:
     """Accumulate PCM and auto-finalize the utterance after a trailing pause."""
+    # Echo suppression (conversation mode): while Zero is thinking/speaking
+    # (audio_busy) or during the short post-turn cooldown, IGNORE the mic — drop
+    # the audio so it never transcribes, and reply to, its own voice. This is what
+    # makes a hands-free loop possible without an infinite self-trigger.
+    import time as _t
+
+    mute_until = float(cl.user_session.get("audio_mute_until") or 0.0)
+    if cl.user_session.get("audio_busy") or _t.monotonic() < mute_until:
+        cl.user_session.set("audio_speech_s", 0.0)
+        cl.user_session.set("audio_silence_s", 0.0)
+        return
+
     buf = cl.user_session.get("audio_buffer")
     if buf is None:
         buf = bytearray()
@@ -1320,8 +1359,31 @@ async def on_audio_end() -> None:
     await _finalize_audio(manual=True)
 
 
+def _apply_wake_word(text: str) -> str | None:
+    """Gate an utterance by the configured wake word(s).
+
+    No wake words configured → pass everything through (return text unchanged).
+    Otherwise return the command with the wake word stripped, or None if the
+    utterance isn't addressed to Zero (mic is on but we shouldn't act on it).
+    """
+    words = cl.user_session.get("voice_wake")
+    if words is None:
+        words = config.VOICE_WAKE_WORDS
+    if not words:
+        return text
+    low = text.lower()
+    for w in words:
+        i = low.find(w)
+        if i != -1:
+            stripped = (text[:i] + text[i + len(w):]).strip(" ,.!?—-").strip()
+            return stripped or text  # if they said ONLY the wake word, keep it
+    return None
+
+
 async def _finalize_audio(manual: bool = False) -> None:
     """Transcribe the buffered utterance and run it like a typed message."""
+    import time as _t
+
     if cl.user_session.get("audio_busy"):
         return
     buf = cl.user_session.get("audio_buffer") or bytearray()
@@ -1342,10 +1404,20 @@ async def _finalize_audio(manual: bool = False) -> None:
             if manual:
                 await cl.Message(content="🎤 _Didn't catch that — please try again._").send()
             return
-        await cl.Message(content=text, type="user_message").send()
-        await _handle_user_message(cl.Message(content=text))
+        # Wake word (optional): if configured, only act when addressed (e.g. say
+        # "זירו …"); the wake word is stripped before the agent sees the command.
+        cmd = _apply_wake_word(text)
+        if cmd is None:
+            return  # mic on, but this utterance wasn't addressed to Zero — ignore
+        await cl.Message(content=cmd, type="user_message").send()
+        await _handle_user_message(cl.Message(content=cmd))
     finally:
         cl.user_session.set("audio_busy", False)
+        # Echo cooldown: keep ignoring the mic briefly so the tail of Zero's own
+        # last words (still in the air / OS buffer) doesn't trigger a new turn.
+        cl.user_session.set(
+            "audio_mute_until", _t.monotonic() + config.VOICE_ECHO_COOLDOWN_S
+        )
 
 
 @cl.on_chat_end

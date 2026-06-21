@@ -235,6 +235,23 @@ STT_END_SILENCE_S: float = float(os.getenv("ZERO_AGENT_STT_END_SILENCE_S", "1.0"
 # Minimum speech (seconds) before a pause can finalize (ignores brief blips).
 STT_MIN_SPEECH_S: float = float(os.getenv("ZERO_AGENT_STT_MIN_SPEECH_S", "0.4"))
 
+# --- Conversation mode (hands-free voice, stage 2) --------------------------
+# When on, the mic stays open and each utterance you speak (after Zero finishes)
+# starts a turn — a real back-and-forth, no button per sentence. The essential
+# guard is ECHO SUPPRESSION: ignore mic input while Zero is thinking/speaking, so
+# it never hears (and replies to) its own voice. A short cooldown after a turn
+# lets the speakers settle before listening resumes. Toggle live in the UI ⚙️.
+VOICE_CONVERSATION: bool = os.getenv("ZERO_AGENT_VOICE_CONVERSATION", "0").lower() in ("1", "true", "yes")
+# Seconds to keep ignoring the mic AFTER a turn finishes (kills the tail echo of
+# Zero's own last words still in the air / OS audio buffer).
+VOICE_ECHO_COOLDOWN_S: float = float(os.getenv("ZERO_AGENT_VOICE_ECHO_COOLDOWN_S", "0.6"))
+# Optional wake words: if set (comma-separated), an utterance is acted on ONLY if
+# it contains one, and the wake word is stripped before the agent sees it. Empty =
+# off (every utterance is a turn). e.g. "זירו,hey zero,בוקר טוב זירו".
+VOICE_WAKE_WORDS: list[str] = [
+    w.strip().lower() for w in os.getenv("ZERO_AGENT_VOICE_WAKE_WORDS", "").split(",") if w.strip()
+]
+
 # --- Self-verification (learn-layer phase 2) --------------------------------
 # After the agent finishes an ACTION task (a turn that used >=1 tool), a strict
 # reviewer checks whether the result was actually verified or merely claimed

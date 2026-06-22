@@ -351,6 +351,19 @@ into tiers; we'll pick from the top.
    **untrusted data, never instructions**, and sanitize before it can become a
    memory/lesson.
 
+- **2b. Build verification (project actually compiles).** ✅ **done 2026-06-21.**
+   `orchestrator/tools/build_tools.py` + the `verify_build(project_dir)` tool extend
+   "code as judge" from per-file syntax (RealityVerifier) to a real PROJECT build:
+   detect the build system (Python/Rust/Go/.NET/TS/Node/JVM/static) → run its
+   compile/check → return PASS / FAIL / **SKIPPED** (distinguishes "code broken" from
+   "toolchain/SDK missing", so we never fail working code for an env gap). Safe (no
+   auto-install / network; Android/Gradle SKIPped — wrapper jar + SDK can't be authored
+   as text) and never hangs (timeout + process-tree kill). Wired into the planner (final
+   "verify build & fix" step) + the worker prompt (build → fix → re-verify loop). The
+   gap between "files look right" and "it builds". **Remaining (Stage B/C):** smoke-run
+   (start + probe), test execution, and a `create_*_project` scaffolding tool to clear the
+   Gradle-wrapper/SDK ceiling for truly one-shot buildable apps. See CHANGELOG.
+
 ### Tier 2 — quality debt (do next)
 
 - **3. Memory hygiene / consolidation** (decay, dedup, contradictions). ChromaDB

@@ -53,7 +53,10 @@ PLANNER_PROMPT = (
     "app/build.gradle (with the Kotlin plugin), the root build.gradle, "
     "settings.gradle, and the res/ layout + values. "
     f"Never put a project's dev/server on a RESERVED port ({config.RESERVED_PORTS}); "
-    "choose a free one (e.g. 8501, 5173, 3000, 8080).\n"
+    "choose a free one (e.g. 8501, 5173, 3000, 8080). "
+    "Make the LAST step 'Verify the project builds and fix any errors' — the worker "
+    "calls verify_build on the project root and fixes reported failures until it "
+    "passes.\n"
     "Respond with ONLY a JSON array of strings, nothing else. "
     'Example: ["Create index.html", "Add styles.css", "Open index.html to verify"].'
 )

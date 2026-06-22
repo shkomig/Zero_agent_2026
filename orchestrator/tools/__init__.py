@@ -15,5 +15,6 @@ from orchestrator.tools import utility_tools  # noqa: E402,F401
 from orchestrator.tools import model_tools  # noqa: E402,F401
 from orchestrator.tools import ops_tools  # noqa: E402,F401
 from orchestrator.tools import graph_tools  # noqa: E402,F401
+from orchestrator.tools import build_tools  # noqa: E402,F401
 
 __all__ = ["ToolRegistry", "registry"]

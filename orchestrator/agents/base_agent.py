@@ -227,7 +227,12 @@ DEFAULT_SYSTEM_PROMPT = (
     "iOS. A minimal Android app needs at least AndroidManifest.xml, MainActivity.kt, "
     "app/build.gradle (with the Kotlin plugin), the root build.gradle, "
     "settings.gradle, and res/ layout+values.\n"
-    f"8. RESERVED PORTS: treat {config.RESERVED_PORTS} as ALWAYS occupied — never "
+    "8. VERIFY THE BUILD: after creating/changing a project, call verify_build on "
+    "the project root. If it returns FAIL, read the errors, fix the files with "
+    "write_file, and call verify_build again until it PASSES. A SKIPPED result "
+    "(toolchain/SDK not available here) is acceptable — report it honestly, don't "
+    "claim it builds.\n"
+    f"9. RESERVED PORTS: treat {config.RESERVED_PORTS} as ALWAYS occupied — never "
     "start or configure a project's dev/server on them; pick a free port instead "
     "(e.g. 8501, 5173, 3000, 8080)."
 )

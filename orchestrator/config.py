@@ -268,6 +268,11 @@ VOICE_INSTANT: bool = os.getenv("ZERO_AGENT_VOICE_INSTANT", "1").lower() in ("1"
 # to trade a little smarts for an even snappier reply. Typed turns are unaffected.
 VOICE_MODEL: str = os.getenv("ZERO_AGENT_VOICE_MODEL", "").strip()
 
+# --- Build verification -----------------------------------------------------
+# Max seconds a project build/compile check may run before it's killed (with its
+# whole process tree). Builds can hang (gradle daemon, watch mode) — this caps it.
+BUILD_VERIFY_TIMEOUT: int = int(os.getenv("ZERO_AGENT_BUILD_VERIFY_TIMEOUT", "300"))
+
 # --- Reserved ports ---------------------------------------------------------
 # Ports the agent must treat as ALWAYS occupied: never bind a project's dev/server
 # to them (avoids clobbering Zero's own UI or a service the user keeps running, and

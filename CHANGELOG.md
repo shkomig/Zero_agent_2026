@@ -14,6 +14,33 @@ this file captures the concrete edits between/around those phases.
 
 ## 2026-06-21
 
+### Added — BuildVerifier: verify a whole project actually COMPILES (not just per-file syntax)
+
+**What:** New `orchestrator/tools/build_tools.py` + a `verify_build(project_dir)` tool —
+extends "code as judge" from per-file syntax to a real PROJECT build. It detects the
+build system (Python, Rust, Go, .NET, TypeScript, Node, JVM/Gradle/Maven, static) and runs
+its real compile/check, returning one of three verdicts:
+- **PASS** — the project compiles.
+- **FAIL** — it doesn't; the build errors follow (so the worker can fix them).
+- **SKIPPED** — can't verify here, with the reason (toolchain not installed, deps not
+  fetched, or a binary/SDK build like Android) — we never fail working code for an
+  environment gap.
+
+Design is **safe** (runs only non-destructive compile/check commands; does NOT auto-run
+`npm install` / hit the network — supply-chain + slowness; SKIPs Android/Gradle since the
+wrapper jar + SDK can't be authored as text) and **never hangs** (timeout +
+process-tree kill, reused from `system_tools`). Python uses `py_compile` over the tree (no
+external tool needed); others run `cargo check` / `go build` / `dotnet build` /
+`tsc --noEmit` / `npm run build` only when the toolchain is present. Wired into the planner
+(last step = "verify the build and fix errors") and the worker/chat system prompt (call
+`verify_build`, fix FAILs with `write_file` until PASS, report SKIPPED honestly). Config
+`BUILD_VERIFY_TIMEOUT` (300 s). 4 regression checks added (PASS/FAIL/SKIPPED/registered);
+24/24 component checks pass.
+
+**Files:** `orchestrator/tools/build_tools.py` (new), `orchestrator/tools/__init__.py`,
+`orchestrator/supervisor.py`, `orchestrator/agents/base_agent.py`, `orchestrator/config.py`,
+`test_agent.py`.
+
 ### Changed — adopt qwopus-coder for Supervisor+Worker; add Agent & Graphify toolbar buttons
 
 **What:** (1) **Model:** `SUPERVISOR_MODEL` and `WORKER_MODEL` both default to

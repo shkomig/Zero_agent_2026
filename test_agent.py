@@ -97,6 +97,21 @@ async def component_checks() -> None:
     ok, _ = v.verify_task("Create Server.go with the handler", "I created Server.go", d)
     check("verifier catches a missing .go file (code path extraction works)", not ok)
 
+    # BuildVerifier — whole-project build, not just per-file syntax.
+    from orchestrator.tools.build_tools import verify_build
+    pdir = tempfile.mkdtemp()
+    with open(os.path.join(pdir, "good.py"), "w", encoding="utf-8") as f:
+        f.write("x = 1\n")
+    check("verify_build PASS on a compiling Python project", verify_build(pdir).startswith("PASS"))
+    with open(os.path.join(pdir, "bad.py"), "w", encoding="utf-8") as f:
+        f.write("def f(:\n")
+    check("verify_build FAIL on a broken Python project", verify_build(pdir).startswith("FAIL"))
+    jvm = tempfile.mkdtemp()
+    with open(os.path.join(jvm, "build.gradle"), "w", encoding="utf-8") as f:
+        f.write("plugins { id 'com.android.application' }\n")
+    check("verify_build SKIPPED (not failed) for a Gradle/SDK build", verify_build(jvm).startswith("SKIPPED"))
+    check("verify_build registered as a tool", "verify_build" in registry.names())
+
     # Injection-defense fence
     check(
         "untrusted web output is fenced",

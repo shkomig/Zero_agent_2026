@@ -118,10 +118,15 @@ TASKS_DIR: str = os.getenv(
 # simply can't finish fails loudly instead of looping forever.
 SUPERVISOR_MAX_REPLANS: int = int(os.getenv("ZERO_AGENT_MAX_REPLANS", "3"))
 
-# Default model for the Supervisor/Planner (reasoning) vs. the Worker (coding/
-# tools). Worker defaults to the fast Qwen3-Coder MoE; override per deployment.
-SUPERVISOR_MODEL: str = os.getenv("ZERO_AGENT_SUPERVISOR_MODEL", "qwen3:32b")
-WORKER_MODEL: str = os.getenv("ZERO_AGENT_WORKER_MODEL", "qwen3-coder-30b")
+# Default model for the Supervisor/Planner vs. the Worker. Both default to
+# `qwopus-coder` (Qwopus3.6-27B-Coder, tools+thinking, Apache-2.0): it validated
+# 27/27 on the eval harness AND built a clean, complete Kotlin project. Using ONE
+# model for both roles avoids the costly per-step model swap on a single 32 GB GPU
+# (OLLAMA_MAX_LOADED_MODELS=1) — qwen3:32b + a 19 GB worker can't co-load, so
+# alternating them reloaded a model every step. For a non-coding /agent goal,
+# override ZERO_AGENT_SUPERVISOR_MODEL=qwen3:32b for broader planning.
+SUPERVISOR_MODEL: str = os.getenv("ZERO_AGENT_SUPERVISOR_MODEL", "qwopus-coder")
+WORKER_MODEL: str = os.getenv("ZERO_AGENT_WORKER_MODEL", "qwopus-coder")
 
 # --- Chat history persistence (local, offline) ------------------------------
 # Chainlit stores every thread/message in a local SQLite file so the sidebar can

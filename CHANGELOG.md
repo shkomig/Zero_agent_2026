@@ -14,6 +14,22 @@ this file captures the concrete edits between/around those phases.
 
 ## 2026-06-21
 
+### Changed — adopt qwopus-coder for Supervisor+Worker; add Agent & Graphify toolbar buttons
+
+**What:** (1) **Model:** `SUPERVISOR_MODEL` and `WORKER_MODEL` both default to
+**`qwopus-coder`** (Qwopus3.6-27B-Coder, tools+thinking, Apache-2.0). It validated
+**27/27** on the eval harness and built a clean, COMPLETE Kotlin Android project (correct
+AndroidManifest.xml with exported launcher + intent-filter, idiomatic MainActivity.kt,
+Kotlin-plugin gradle, JVM 17) — clearly better than the prior Java attempt. Using ONE
+model for both roles is also faster on a single 32 GB GPU: qwen3:32b + a 19 GB worker
+can't co-load (`OLLAMA_MAX_LOADED_MODELS=1`), so alternating them reloaded a model every
+step; one model = no swap. Override `ZERO_AGENT_SUPERVISOR_MODEL=qwen3:32b` for broader
+(non-coding) planning. (2) **Composer toolbar:** added **🤖 Agent** (runs the typed text
+as an autonomous `/agent` goal) and **🔗 Graphify** (build a knowledge graph of a local
+project folder) buttons, alongside Research/Image/Video/Remember.
+
+**Files:** `orchestrator/config.py`, `app.py`.
+
 ### Improved — planner builds COMPLETE projects (Kotlin/modern defaults) + reserved ports
 
 **What:** Two upgrades so `/agent` builds real, complete apps. (1) **Completeness +

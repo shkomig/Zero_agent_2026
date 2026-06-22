@@ -106,6 +106,13 @@ def _voice_lang_index(code: "str | None") -> int:
 # route it to the right tool. Icons are lucide names.
 CHAT_COMMANDS = [
     {
+        "id": "Agent",
+        "icon": "bot",
+        "description": "Autonomous multi-step build — plan → do → verify on disk",
+        "button": True,
+        "persistent": False,
+    },
+    {
         "id": "Research",
         "icon": "telescope",
         "description": "Deep web research — reads multiple sources and cites them",
@@ -123,6 +130,13 @@ CHAT_COMMANDS = [
         "id": "Video",
         "icon": "video",
         "description": "Generate a video with ComfyUI (LTX/Wan) — runs in the background",
+        "button": True,
+        "persistent": False,
+    },
+    {
+        "id": "Graphify",
+        "icon": "share-2",
+        "description": "Build a knowledge graph of a local project folder",
         "button": True,
         "persistent": False,
     },
@@ -934,6 +948,18 @@ async def _handle_user_message(message: cl.Message, from_voice: bool = False) ->
             await cl.Message(content=f"⚠️ Could not save to memory: {exc}").send()
         return
 
+    # 🤖 Agent button: run the typed text as an autonomous multi-step goal.
+    if command == "Agent":
+        goal = message.content.strip()
+        if not goal:
+            await cl.Message(
+                content="🤖 Type a goal, then tap **Agent** — e.g. "
+                '"build a Kotlin Android todo app at C:\\\\projects\\\\todo".'
+            ).send()
+            return
+        await _handle_agent_command(f"/agent {goal}")
+        return
+
     # Show what the agent has learned from its mistakes (phase 3: transparency).
     if message.content.strip().lower() == "/lessons":
         await cl.Message(content=lessons.list_lessons(get_store())).send()
@@ -976,6 +1002,13 @@ async def _handle_user_message(message: cl.Message, from_voice: bool = False) ->
             "Do thorough, up-to-date web research on the following and answer with "
             "a clear synthesis and cited sources. Use the deep_research tool.\n\n"
             + message.content
+        )
+    elif command == "Graphify":
+        prompt = (
+            "Build a knowledge graph of this local project folder with the "
+            "graphify_project tool (mode='code'). When done, report where graph.html "
+            "and GRAPH_REPORT.md were written and summarize the top god nodes and "
+            "communities:\n\n" + message.content
         )
     elif command == "Image":
         prompt = (

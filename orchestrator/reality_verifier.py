@@ -40,7 +40,11 @@ _CREATION_WORDS = (
 # end in a known file extension. Deliberately broad — we then test on disk.
 _EXT = (
     r"py|js|ts|tsx|jsx|html|htm|css|json|md|txt|csv|yaml|yml|toml|ini|cfg|"
-    r"bat|cmd|ps1|sh|sql|xml|svg|png|jpg|jpeg|gif|pdf|docx?|xlsx?"
+    r"bat|cmd|ps1|sh|sql|xml|svg|png|jpg|jpeg|gif|pdf|docx?|xlsx?|"
+    # source/code files — without these the verifier was BLIND to e.g. .java and
+    # failed every "create a code file" step as if nothing landed on disk.
+    r"java|kt|kts|c|cc|cpp|cxx|h|hpp|hh|go|rs|rb|php|swift|scala|dart|lua|cs|"
+    r"vue|svelte|scss|sass|less|gradle|properties|proto|graphql|gql|jsonc|R|pl"
 )
 _PATH_RE = re.compile(
     r"""['"`]([^'"`\n]+?\.(?:%s))['"`]"""  # quoted "path.ext"

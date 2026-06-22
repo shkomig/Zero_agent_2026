@@ -86,6 +86,16 @@ async def component_checks() -> None:
     check("verifier passes a real directory (not demanding a file)", ok)
     ok, _ = v.verify_task(f"Create the directory {os.path.join(d, 'ghostdir')}", "done", d)
     check("verifier catches a missing directory", not ok)
+    # Code files must be SEEN by the verifier (regression: .java/.go/etc. were not in
+    # the extension list, so every "create a code file" step falsely failed as
+    # "nothing landed on disk", breaking real app-building goals).
+    java = os.path.join(d, "MainActivity.java")
+    with open(java, "w", encoding="utf-8") as f:
+        f.write("package com.example;\npublic class MainActivity {}\n")
+    ok, _ = v.verify_task("Create MainActivity.java with the activity code", f"wrote {java}", d)
+    check("verifier recognizes a .java code file (not blind to code)", ok)
+    ok, _ = v.verify_task("Create Server.go with the handler", "I created Server.go", d)
+    check("verifier catches a missing .go file (code path extraction works)", not ok)
 
     # Injection-defense fence
     check(

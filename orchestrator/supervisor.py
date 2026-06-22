@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shutil
 from collections.abc import Awaitable, Callable
 
 from orchestrator import config
@@ -211,20 +213,40 @@ class Supervisor:
             worker_prompt = (
                 f"TASK: {task.description}{retry_hint}\n\n"
                 "Execute ONLY this task, fully, by calling the tools. Do not "
-                "describe what you would do — actually do it."
+                "describe what you would do — actually do it.\n"
+                "If this task creates a file, call write_file with the EXACT target "
+                "path from the task, copied character-for-character — do NOT rename, "
+                "shorten, or drop any folder in the path."
             )
+
+            # Capture the paths the worker actually writes to, so we can detect and
+            # repair a garbled path: weak local models often mangle a long path
+            # (e.g. drop a folder), write the file to the wrong place, then "verify"
+            # their own wrong path — leaving nothing at the path the plan expected.
+            written: list[str] = []
+
+            async def _capture_start(name, args, _orig=self.on_tool_start):
+                if name == "write_file" and isinstance(args, dict):
+                    fp = args.get("filepath") or args.get("path")
+                    if fp:
+                        written.append(str(fp))
+                if _orig is not None:
+                    return await _orig(name, args)
+                return None
 
             try:
                 result = await self.worker.run(
                     worker_prompt,
                     history=[],
                     injected_context=context,
-                    on_tool_start=self.on_tool_start,
+                    on_tool_start=_capture_start,
                     on_tool_end=self.on_tool_end,
                     on_approval=self.on_approval,
                 )
             except OllamaError as exc:
                 result = f"(worker error: {exc})"
+
+            await self._heal_garbled_paths(task.description, written)
 
             ok, msg = self.verifier.verify_task(
                 task.description, result, self.task_manager.state.memory.cwd
@@ -276,6 +298,40 @@ class Supervisor:
             f"Finished with partial success: {done}/{len(self.task_manager.state.plan)} "
             "steps verified. See task state for details."
         )
+
+    async def _heal_garbled_paths(self, task_description: str, written: list[str]) -> None:
+        """Repair a worker that wrote a file to a MANGLED path.
+
+        Weak local models often can't reproduce a long path verbatim — they drop a
+        folder or alter a name, so the file lands next to (not at) the path the plan
+        asked for, and verification then fails forever. Here: for each file the task
+        expected, if it's missing but the worker DID write exactly one file with the
+        same basename (the garbled twin), move it to the intended path. Deterministic,
+        no model cooperation needed. Best-effort and never raises.
+        """
+        if not written:
+            return
+        cwd = self.task_manager.state.memory.cwd
+        expected = self.verifier._resolve(
+            self.verifier._extract_paths(task_description), cwd
+        )
+        landed = [w for w in written if os.path.isfile(w)]
+        for exp in expected:
+            if os.path.isfile(exp):
+                continue  # the worker got it right
+            base = os.path.basename(exp).lower()
+            twins = [w for w in landed if os.path.basename(w).lower() == base]
+            if len(twins) != 1 or os.path.normpath(twins[0]) == os.path.normpath(exp):
+                continue
+            try:
+                os.makedirs(os.path.dirname(exp) or ".", exist_ok=True)
+                shutil.move(twins[0], exp)
+                await self._emit(
+                    "path_fixed",
+                    f"worker wrote to a garbled path; moved {twins[0]} → {exp}",
+                )
+            except OSError as exc:
+                logger.warning("path heal failed (%s → %s): %s", twins[0], exp, exc)
 
     async def _synthesize_deliverable(self, goal: str) -> str:
         """Write the FINAL deliverable from the completed step results — the actual

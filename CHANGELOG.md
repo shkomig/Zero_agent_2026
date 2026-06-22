@@ -14,6 +14,33 @@ this file captures the concrete edits between/around those phases.
 
 ## 2026-06-21
 
+### Fixed — /agent failed to build code projects (verifier blind to code files + worker path garbling)
+
+**What:** In agent mode, building a real app (e.g. an Android project under
+`C:\projects\childmonitor`) failed the SAME step "forever" (2 attempts × 3 replans),
+while a docs project (`C:\phone`, all `.md`) succeeded. Reproduced with the worker
+model and found TWO compounding bugs:
+
+1. **The RealityVerifier was blind to source-code files.** Its path-extraction
+   extension list had `py/js/html/json/…` but **not** `java`, `go`, `rs`, `c`, `cpp`,
+   `kt`, `php`, etc. So for "Create MainActivity.java …" it found no path, judged
+   "nothing landed on disk / worker only described it", and failed the step even when
+   the file was written correctly. Added the common code extensions to `_EXT`. This is
+   the primary fix — it unblocks every code-file step (and the heal below).
+2. **The worker garbles long paths.** qwen3-coder DID call `write_file`, but mangled
+   the 90-char target (`…\zerotest\app\src\…` → `…\zerotestpp\src\…`, dropping a
+   folder), wrote the file to the wrong place, "verified" its own wrong path, and
+   claimed success — so nothing landed where the plan expected. The Supervisor now
+   captures the paths the worker actually writes and, if the expected file is missing
+   but exactly one same-basename file landed (the garbled twin), **moves it to the
+   intended path** (`_heal_garbled_paths`, deterministic, no model cooperation). Plus a
+   worker-prompt nudge to copy the target path character-for-character.
+
+Regression checks added to `test_agent.py` (verifier sees `.java`, catches missing
+`.go`). 20/20 component checks pass.
+
+**Files:** `orchestrator/reality_verifier.py`, `orchestrator/supervisor.py`, `test_agent.py`.
+
 ### Added — Instant voice: skip the thinking block on spoken turns (the real latency fix)
 
 **What:** The long silence before Zero spoke wasn't the TTS or Chainlit — it was the

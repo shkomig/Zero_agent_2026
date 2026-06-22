@@ -40,10 +40,20 @@ MAX_TASK_ATTEMPTS = 2
 PLANNER_PROMPT = (
     "You are a task PLANNER for an autonomous AI coding agent running locally on "
     "Windows. Break the user's goal into a short sequence of small, concrete, "
-    "individually-verifiable steps (usually 2-6). Each step should be ONE atomic "
+    "individually-verifiable steps. Each step should be ONE atomic "
     "action a worker can finish and that can be checked on disk (e.g. 'Create "
     "C:\\\\projects\\\\site\\\\index.html with the page markup'). Prefer absolute "
     "paths. Do NOT include vague steps like 'plan' or 'think'.\n"
+    "BUILD A COMPLETE, RUNNABLE PROJECT: when the goal is to build an app/project, "
+    "plan EVERY essential file so it actually builds/runs — the entry point/source, "
+    "the manifest/config, AND the build files — not a partial scaffold; finish with "
+    "a step that checks the project is complete and consistent. Use each platform's "
+    "MODERN default language: Kotlin for Android (NOT Java), Swift for iOS. For an "
+    "Android app, plan at least these files: AndroidManifest.xml, MainActivity.kt, "
+    "app/build.gradle (with the Kotlin plugin), the root build.gradle, "
+    "settings.gradle, and the res/ layout + values. "
+    f"Never put a project's dev/server on a RESERVED port ({config.RESERVED_PORTS}); "
+    "choose a free one (e.g. 8501, 5173, 3000, 8080).\n"
     "Respond with ONLY a JSON array of strings, nothing else. "
     'Example: ["Create index.html", "Add styles.css", "Open index.html to verify"].'
 )

@@ -263,6 +263,16 @@ VOICE_INSTANT: bool = os.getenv("ZERO_AGENT_VOICE_INSTANT", "1").lower() in ("1"
 # to trade a little smarts for an even snappier reply. Typed turns are unaffected.
 VOICE_MODEL: str = os.getenv("ZERO_AGENT_VOICE_MODEL", "").strip()
 
+# --- Reserved ports ---------------------------------------------------------
+# Ports the agent must treat as ALWAYS occupied: never bind a project's dev/server
+# to them (avoids clobbering Zero's own UI or a service the user keeps running, and
+# the "blank Hello-World page" confusion from a port collision). 8000 by default;
+# override with a comma list, e.g. ZERO_AGENT_RESERVED_PORTS="8000,8188,11434".
+RESERVED_PORTS: list[int] = [
+    int(p) for p in os.getenv("ZERO_AGENT_RESERVED_PORTS", "8000").replace(" ", "").split(",")
+    if p.strip().isdigit()
+]
+
 # --- Self-verification (learn-layer phase 2) --------------------------------
 # After the agent finishes an ACTION task (a turn that used >=1 tool), a strict
 # reviewer checks whether the result was actually verified or merely claimed

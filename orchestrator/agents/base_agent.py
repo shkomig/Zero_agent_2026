@@ -219,7 +219,17 @@ DEFAULT_SYSTEM_PROMPT = (
     "5. ROBUSTNESS: handle errors and edge cases (empty input, offline, failed "
     "requests) with clear user-facing messages.\n"
     "6. SELF-REVIEW: before finishing, re-read your own code once for bugs, "
-    "then briefly state what you built and how to run/open it."
+    "then briefly state what you built and how to run/open it.\n"
+    "7. COMPLETE & RUNNABLE: when building an app/project, create EVERY essential "
+    "file so it actually builds/runs — the entry point/source, the manifest/config, "
+    "AND the build files — never a partial scaffold or empty folders. Use each "
+    "platform's MODERN default language: Kotlin for Android (NOT Java), Swift for "
+    "iOS. A minimal Android app needs at least AndroidManifest.xml, MainActivity.kt, "
+    "app/build.gradle (with the Kotlin plugin), the root build.gradle, "
+    "settings.gradle, and res/ layout+values.\n"
+    f"8. RESERVED PORTS: treat {config.RESERVED_PORTS} as ALWAYS occupied — never "
+    "start or configure a project's dev/server on them; pick a free port instead "
+    "(e.g. 8501, 5173, 3000, 8080)."
 )
 
 # --- Per-model personas -----------------------------------------------------

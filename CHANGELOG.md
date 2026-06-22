@@ -14,6 +14,24 @@ this file captures the concrete edits between/around those phases.
 
 ## 2026-06-21
 
+### Improved — planner builds COMPLETE projects (Kotlin/modern defaults) + reserved ports
+
+**What:** Two upgrades so `/agent` builds real, complete apps. (1) **Completeness +
+modern language:** the planner (and the worker/chat system prompt) now require a
+COMPLETE, runnable project — every essential file (entry point/source, manifest/config,
+build files), not a partial scaffold — and use each platform's modern default language:
+**Kotlin for Android** (not Java), Swift for iOS, with an explicit Android file checklist
+(AndroidManifest.xml, MainActivity.kt, app+root build.gradle with the Kotlin plugin,
+settings.gradle, res/). Dropped the planner's "2-6 steps" cap (a full app needs more).
+(2) **Reserved ports:** new `config.RESERVED_PORTS` (default `[8000]`,
+`ZERO_AGENT_RESERVED_PORTS` override) — the agent must treat these as always occupied and
+never bind a generated project's dev/server to them, killing the port-collision "blank
+Hello-World page" confusion with Zero's own UI. _Honest ceiling noted to the user: a 100%
+buildable Android app still needs the binary `gradle-wrapper.jar` + Android SDK, which an
+LLM can't hand-write — a future `create_*_project` scaffolding tool would close that._
+
+**Files:** `orchestrator/supervisor.py`, `orchestrator/agents/base_agent.py`, `orchestrator/config.py`.
+
 ### Fixed — /agent failed to build code projects (verifier blind to code files + worker path garbling)
 
 **What:** In agent mode, building a real app (e.g. an Android project under

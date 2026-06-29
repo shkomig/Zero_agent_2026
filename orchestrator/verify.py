@@ -135,3 +135,62 @@ async def check_faithfulness(
         critique = raw.split(":", 1)[1].strip() if ":" in raw else ""
         return False, critique or "some claims are not supported by the retrieved sources"
     return True, ""
+
+
+_COMPLETION_PROMPT = (
+    "You are a STRICT ACCEPTANCE reviewer for ONE step of an autonomous coding agent. "
+    "Reality already confirmed the files exist and compile; your job is the harder "
+    "question: was the step's INTENT genuinely fulfilled, or is the deliverable shallow, "
+    "wrong, or fake-passing? Below are the STEP and the EVIDENCE (the agent's result plus "
+    "the actual content of any file it wrote).\n"
+    "Mark FAIL if the deliverable:\n"
+    "- does the WRONG thing, or is a stub/placeholder/boilerplate that doesn't meet the "
+    "step's stated purpose;\n"
+    "- contradicts an EXPLICIT requirement of the step — e.g. the step asks to use a "
+    "local LLM but the code hard-codes a lookup table; asks to translate but returns a "
+    "generic placeholder; asks to replace rule-based logic but adds more rules;\n"
+    "- is obviously broken for the described use (would produce garbage on real input).\n"
+    "Judge ONLY this step's intent — do NOT demand work beyond it, and do NOT fail it for "
+    "style. If the deliverable genuinely fulfills the step, respond with exactly: OK\n"
+    "Otherwise respond with exactly: FAIL: <one short, specific sentence on what is wrong "
+    "or missing>\n\n"
+    "STEP: {task}\n\nEVIDENCE (result + produced content):\n{evidence}"
+)
+
+
+async def check_task_completion(
+    client: OllamaClient, task: str, evidence: str, *, max_chars: int = 4500
+) -> tuple[bool, str]:
+    """Return ``(ok, critique)`` for whether a step's deliverable fulfills its INTENT.
+
+    The semantic complement to RealityVerifier: reality checks "exists / compiles",
+    this checks "actually does the right thing" — catching shallow stubs and
+    requirement violations (e.g. hard-coding a table when an LLM was required) that
+    compile cleanly and so fool a syntax-only judge. Conservative: errors → ``(True,
+    "")`` so a judging hiccup never blocks a step.
+    """
+    task = (task or "").strip()
+    evidence = (evidence or "").strip()
+    if not task or not evidence:
+        return True, ""
+    try:
+        resp = await client.chat(
+            [
+                {
+                    "role": "user",
+                    "content": _COMPLETION_PROMPT.format(
+                        task=task[:1500], evidence=evidence[:max_chars]
+                    ),
+                }
+            ],
+            options={"temperature": 0.0},
+        )
+    except OllamaError:
+        logger.exception("completion check failed; treating as OK")
+        return True, ""
+
+    raw = (resp.message.content or "").strip()
+    if raw.upper().startswith("FAIL"):
+        critique = raw.split(":", 1)[1].strip() if ":" in raw else ""
+        return False, critique or "the deliverable does not fulfill the step's intent"
+    return True, ""

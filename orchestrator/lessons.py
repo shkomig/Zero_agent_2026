@@ -22,6 +22,7 @@ import logging
 
 from orchestrator import config
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory_guard import sanitize_for_memory
 from orchestrator.models.ollama_client import OllamaClient
 
 logger = logging.getLogger("zero_agent.lessons")
@@ -151,6 +152,13 @@ async def distill_lessons(
         lesson = line.strip().lstrip("-*0123456789. ").strip()
         if len(lesson) < 8 or lesson.upper() == "NONE":
             continue
+        # A lesson is distilled from a failed run whose output may be poisoned —
+        # gate it before it becomes a durable, recalled rule.
+        safe = sanitize_for_memory(lesson)
+        if safe is None:
+            logger.warning("dropped unsafe lesson: %s", lesson[:80])
+            continue
+        lesson = safe
         try:
             # Skip a near-duplicate lesson already stored.
             existing = await store.recall(lesson, k=1)

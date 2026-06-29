@@ -35,6 +35,7 @@ flowchart TB
         SUM["summarizer<br/>rolling summary"]
         VER["verify<br/>self-check"]
         PROJ["projects<br/>knowledge bases"]
+        SES["session_context<br/>cross-session task state"]
     end
 
     subgraph MODELS["Models — interchangeable brains"]
@@ -51,6 +52,7 @@ flowchart TB
         CHROMA[("ChromaDB<br/>memory · lessons · projects")]
         SQLITE[("SQLite<br/>UI chat history")]
         TGJSON[("JSON<br/>Telegram history")]
+        SESJSON[("JSON + MD + TXT<br/>session task context")]
     end
 
     UI <--> STT
@@ -135,9 +137,10 @@ feedback you give under one model is honoured by **all** of them — only how
 | Model client | `orchestrator/models/ollama_client.py` |
 | Voice | `orchestrator/stt.py` (in), `orchestrator/tts.py` (out) |
 | Memory & learning | `orchestrator/auto_memory.py`, `lessons.py`, `summarizer.py`, `verify.py`, `projects.py` |
+| Cross-session context | `orchestrator/session_context.py`, `orchestrator/tools/session_tools.py` — task state + journal + summary persistence across sessions |
 | Vector store | `orchestrator/memory/store.py` (ChromaDB) |
-| Tools | `orchestrator/tools/` (registry + `system/media/model/ops/utility` tools) |
-| Persistence | `orchestrator/persistence.py` (SQLite), `telegram_history.py` (JSON) |
+| Tools | `orchestrator/tools/` (registry + `system/media/model/ops/utility/session` tools) |
+| Persistence | `orchestrator/persistence.py` (SQLite), `telegram_history.py` (JSON), `data/session/` (task context) |
 | Config | `orchestrator/config.py` (all settings, env-overridable) |
 
 See [ROADMAP.md](ROADMAP.md) for status and [CHANGELOG.md](CHANGELOG.md) for the

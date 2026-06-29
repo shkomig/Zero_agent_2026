@@ -104,6 +104,13 @@ class TaskManager:
         ]
         self.save()
 
+    def set_cwd(self, cwd: str) -> None:
+        """Point the run at a specific working directory (e.g. an existing project
+        the goal names), so the verifier/path-heal resolve relative names there
+        instead of the default scratch workspace. Persisted."""
+        self.state.memory.cwd = cwd
+        self.save()
+
     def replan_remaining(self, new_tasks: list[str]) -> None:
         """Replace only the not-yet-completed steps (after a failure) and keep a
         stable id space so completed work is never re-run."""
@@ -143,9 +150,11 @@ class TaskManager:
             if task.id == task_id:
                 task.status = TaskStatus.FAILED
                 task.root_cause = root_cause
-                self.state.memory.lessons_learned.append(
-                    f"Task {task_id} ('{task.description}') failed: {root_cause}"
-                )
+                # Dedup: the same step failing the same way repeatedly (e.g. a retry
+                # loop) must not stack identical lessons that bloat the worker brief.
+                lesson = f"Task {task_id} ('{task.description}') failed: {root_cause}"
+                if lesson not in self.state.memory.lessons_learned:
+                    self.state.memory.lessons_learned.append(lesson)
                 break
         self.save()
 

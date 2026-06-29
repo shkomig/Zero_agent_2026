@@ -26,6 +26,7 @@ research** engine.
 | **Voice** | Local Kokoro TTS out + faster-whisper STT in (torch-free, off the LLM's VRAM). | 🔊 toggle / 🎤 mic |
 | **Media** | ComfyUI image/video generation (sync + background jobs), local vision. | 🎨 / 🎥 buttons |
 | **Projects** | Named, persistent knowledge bases (ChatGPT-Projects style). | `/projects`, `/project` |
+| **Session context** | Cross-session task memory — persists active task, step, action journal, and rolling summary so Zero always knows what it was working on after a restart. Zero cost per turn (file I/O only at session start). | automatic + `/status`, `/cleartask` |
 
 ---
 
@@ -69,6 +70,7 @@ Code lives in `orchestrator/`; entry points are at the repository root.
 | `orchestrator/models/ollama_client.py` | Async Ollama client; capability detection via `/api/show`. |
 | `orchestrator/tools/` | `system`, `research`, `media`, `memory`, `model`, `ops`, `utility` tools + registry. |
 | `orchestrator/memory/`, `auto_memory.py`, `lessons.py`, `projects.py`, `summarizer.py` | Vector memory, learning layer, projects, rolling summary. |
+| `orchestrator/session_context.py`, `tools/session_tools.py` | Cross-session task context: read/write `data/session/{session_state.json,task_journal.md,last_summary.txt}`; inject `[[ZERO_SESSION]]` at session start; 3 tools (`update_task_state`, `log_task_action`, `get_task_status`). |
 | `orchestrator/tts.py`, `stt.py` | Local voice (Kokoro TTS, faster-whisper STT). |
 | `app.py` *(root)* | Chainlit UI (production entry point). |
 | `main.py` / `telegram_bot.py` *(root)* | CLI harness / Telegram bridge. |
@@ -118,6 +120,7 @@ single 32 GB card.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
+| `ZERO_AGENT_SESSION_CONTEXT` | `1` | Enable cross-session task context injection (`0` to disable). |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama URL. `0.0.0.0`/bind-style values are normalized to loopback. |
 | `ZERO_AGENT_MODEL` | `qwen3:32b` | Default chat model. |
 | `ZERO_AGENT_NUM_CTX` | `16384` | Context window (VRAM-safe on the 32 GB card; `OLLAMA_MAX_LOADED_MODELS=1`). |

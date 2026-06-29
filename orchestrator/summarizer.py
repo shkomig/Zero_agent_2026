@@ -122,4 +122,10 @@ async def maybe_summarize(
         len(summary),
         len(recent),
     )
+    # Persist the summary so the NEXT session can load it and maintain continuity.
+    try:
+        from orchestrator import session_context as _sc
+        _sc.save_last_summary(summary)
+    except Exception:  # noqa: BLE001 - never break a turn over persistence
+        logger.exception("failed to persist rolling summary to disk")
     return True

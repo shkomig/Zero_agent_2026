@@ -40,13 +40,23 @@ class OllamaToolCallError(OllamaError):
 
 
 def _is_tool_call_error(body: str) -> bool:
-    """True if a 5xx body indicates a malformed tool call (not a real server fault)."""
+    """True if the body indicates a model-side tool/template failure (not a server fault).
+
+    Covers both 5xx malformed-tool-call responses and the 400 "Unable to generate
+    parser for this template" error that qwen3.6-uncensored and similar models emit
+    when Ollama can't parse their chat template for tool-calling. Both are
+    deterministic model-side failures — retrying the identical request is pointless;
+    the agent should retry without tools instead.
+    """
     low = body.lower()
     return (
         "tool call" in low
         or "tool_call" in low
         or "end of json input" in low
         or ("invalid" in low and "json" in low)
+        or "generate parser" in low          # "Unable to generate parser for this template"
+        or "automatic parser" in low         # "Automatic parser generation failed"
+        or ("template" in low and "fail" in low)  # generic template failure
     )
 
 
@@ -305,14 +315,23 @@ class OllamaClient:
                 await self._backoff(attempt, RuntimeError(f"HTTP {resp.status_code}"))
                 continue
             if resp.status_code >= 400:
-                # 4xx is a real client error (e.g. "model does not support
-                # tools"); surface it instead of retrying.
                 detail = resp.text
                 try:
                     detail = resp.json().get("error", detail)
                 except Exception:  # noqa: BLE001
                     pass
-                raise OllamaError(f"Ollama /api/chat {resp.status_code}: {detail}")
+                detail_str = str(detail)
+                # A template-parser failure on 400 is deterministic: this model
+                # can't do tool-calling. Raise OllamaToolCallError so the agent
+                # retries the turn in text-mode (no tools) instead of showing
+                # "Ollama not running" to the user.
+                if _is_tool_call_error(detail_str):
+                    raise OllamaToolCallError(
+                        f"Ollama /api/chat {resp.status_code} "
+                        f"(model template/tool error — will retry without tools): "
+                        f"{detail_str[:300]}"
+                    )
+                raise OllamaError(f"Ollama /api/chat {resp.status_code}: {detail_str}")
             return ChatResponse.model_validate(resp.json())
 
         # Loop exhausted on 5xx without returning/raising above.
@@ -357,12 +376,16 @@ class OllamaClient:
                             body = json.loads(body).get("error", body)
                         except Exception:  # noqa: BLE001
                             pass
-                        # Malformed tool call = deterministic; don't burn retries,
-                        # raise a distinct error so the agent can retry text-mode.
-                        if resp.status_code >= 500 and _is_tool_call_error(body):
+                        body_str = str(body)
+                        # Template-parser / malformed-tool-call failures are
+                        # deterministic on both 4xx and 5xx — retrying identical
+                        # payload won't help; raise OllamaToolCallError so the
+                        # agent retries the turn in text-mode (no tools).
+                        if _is_tool_call_error(body_str):
                             raise OllamaToolCallError(
                                 f"Ollama /api/chat {resp.status_code} "
-                                f"(malformed tool call): {body[:300]}"
+                                f"(model template/tool error — will retry without tools): "
+                                f"{body_str[:300]}"
                             )
                         if resp.status_code >= 500 and attempt < self.max_retries:
                             await self._backoff(
@@ -370,7 +393,7 @@ class OllamaClient:
                             )
                             continue
                         raise OllamaError(
-                            f"Ollama /api/chat {resp.status_code}: {body}"
+                            f"Ollama /api/chat {resp.status_code}: {body_str}"
                         )
 
                     async for line in resp.aiter_lines():

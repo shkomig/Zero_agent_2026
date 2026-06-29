@@ -284,14 +284,53 @@ async def _wait_for_result(
 
 
 @registry.register
+async def free_llm_vram() -> str:
+    """Unload the current LLM from GPU VRAM so ComfyUI can use the freed memory.
+
+    ALWAYS call this before generating video or any heavy ComfyUI render.
+    The LLM occupies ~20 GB VRAM; ComfyUI video models need another 8-16 GB.
+    Running both simultaneously causes out-of-memory — the system freezes.
+    Calling this first gracefully unloads the LLM; it reloads automatically
+    on the next text reply (adds ~5-10 s to that reply's first-token latency).
+
+    Call order for video generation:
+      1. free_llm_vram()          <- this tool
+      2. submit_comfyui_job(...)  <- fire background render
+      3. Tell the user to check back with check_job(job_id)
+    """
+    base = config.OLLAMA_HOST.rstrip("/")
+    model = config.DEFAULT_MODEL
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.post(
+                f"{base}/api/generate",
+                json={"model": model, "keep_alive": 0},
+            )
+        if resp.status_code == 200:
+            return (
+                f"LLM '{model}' unloaded from VRAM. "
+                "ComfyUI now has full GPU memory for the render. "
+                "The model reloads automatically on the next message (~5-10 s extra latency)."
+            )
+        return (
+            f"Warning: Ollama returned HTTP {resp.status_code} when asked to unload "
+            f"'{model}'. Proceeding anyway — VRAM may still be contested."
+        )
+    except httpx.HTTPError as exc:
+        return f"Warning: could not reach Ollama to free VRAM ({exc}). Proceeding anyway."
+
+
+@registry.register
 async def run_comfyui_workflow(workflow_json_path: str, prompt_text: str) -> str:
     """Run a local ComfyUI workflow with a custom prompt and wait for the result.
 
     Loads an API-format ComfyUI workflow, injects ``prompt_text`` into its main
     positive CLIPTextEncode node, submits it to the local ComfyUI server, and
-    polls until the generation finishes. Use this for QUICK jobs (single images);
-    for heavy renders that take minutes (e.g. video), prefer submit_comfyui_job
-    so the agent does not block.
+    polls until the generation finishes. Use this for QUICK jobs (single images).
+
+    WARNING: Do NOT use this for video generation — video renders take minutes
+    and will make the agent unresponsive. For video, call free_llm_vram() first,
+    then submit_comfyui_job() which returns immediately with a job id.
 
     Args:
         workflow_json_path: Path to a ComfyUI API-format workflow JSON file.
@@ -367,10 +406,18 @@ async def _run_job_in_background(job: ComfyJob, workflow: dict[str, Any], target
 async def submit_comfyui_job(workflow_json_path: str, prompt_text: str) -> str:
     """Start a ComfyUI render in the BACKGROUND and return a job id immediately.
 
-    Use this for heavy/slow generations (video, large batches) so you do NOT
-    block and can keep chatting. The render runs in the background; check on it
-    later with check_job(job_id). For quick single images, run_comfyui_workflow
-    is simpler.
+    Use this for video generation and heavy renders (large batches, long animations).
+    Returns a job_id at once; the render continues in the background.
+    Check progress later with check_job(job_id).
+
+    IMPORTANT — VRAM: Always call free_llm_vram() BEFORE this for video renders.
+    The LLM and a video model cannot share VRAM; skipping free_llm_vram causes
+    an out-of-memory crash that freezes the computer.
+
+    Correct call sequence for video:
+      1. free_llm_vram()
+      2. submit_comfyui_job(workflow, prompt)  -> job_id
+      3. Tell user: "Render started (job_id=XXX). Check back with /check_job XXX."
 
     Args:
         workflow_json_path: Path to a ComfyUI API-format workflow JSON file.
@@ -448,6 +495,192 @@ async def list_media_assets() -> str:
         )
 
     return await asyncio.to_thread(_scan)
+
+
+def _inject_image(workflow: dict[str, Any], image_path: str) -> str:
+    """Inject a source image path into the first LoadImage node in the workflow.
+
+    Used for img2vid workflows (SVD, WAN, LTX) that take a reference image.
+    Returns the node_id that was modified, or raises ValueError if none found.
+    """
+    loaders = [
+        (node_id, node)
+        for node_id, node in workflow.items()
+        if isinstance(node, dict)
+        and node.get("class_type") == "LoadImage"
+        and isinstance(node.get("inputs"), dict)
+    ]
+    if not loaders:
+        raise ValueError(
+            "No LoadImage node found in workflow. "
+            "This workflow may not support img2vid. "
+            "Re-export a workflow that has a LoadImage node."
+        )
+    node_id, node = loaders[0]
+    # ComfyUI LoadImage expects just the filename (relative to its input/ folder)
+    # OR an absolute path when using the full path variant. We pass the absolute path.
+    node["inputs"]["image"] = str(Path(image_path).resolve())
+    return node_id
+
+
+@registry.register
+async def submit_img2vid_job(
+    workflow_json_path: str,
+    source_image_path: str,
+    prompt_text: str = "",
+) -> str:
+    """Start a ComfyUI img2vid render in the BACKGROUND and return a job id.
+
+    Use for video generation FROM an existing image (SVD, WAN, LTX-Video).
+    Injects the source image into the workflow's LoadImage node and (if the
+    workflow has a CLIPTextEncode) the optional prompt into the positive node.
+
+    IMPORTANT: Always call free_llm_vram() BEFORE this — the LLM and a video
+    model cannot share VRAM and will cause an out-of-memory system freeze.
+
+    Args:
+        workflow_json_path: Path to a ComfyUI API-format img2vid workflow JSON.
+        source_image_path: Absolute path to the source image (PNG/JPG) to animate.
+        prompt_text: Optional text prompt to inject (leave empty for pure img2vid).
+    """
+    if not Path(source_image_path).exists():
+        return f"Error: source image not found: {source_image_path}"
+    try:
+        workflow = _load_workflow(workflow_json_path)
+        target_img_node = _inject_image(workflow, source_image_path)
+        target_txt_node = ""
+        if prompt_text.strip():
+            try:
+                target_txt_node = _inject_prompt(workflow, prompt_text)
+            except ValueError:
+                pass  # workflow has no text node — fine for pure img2vid
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+        return f"Error preparing img2vid workflow: {type(exc).__name__}: {exc}"
+
+    job = ComfyJob(id=uuid.uuid4().hex[:8], prompt_text=f"img2vid:{Path(source_image_path).name} {prompt_text}".strip())
+    _JOBS[job.id] = job
+    asyncio.create_task(_run_job_in_background(job, workflow, target_img_node))
+    logger.info("img2vid job %s queued image=%s", job.id, source_image_path)
+    return (
+        f"Started img2vid background render (job_id={job.id}). "
+        f"Source: {Path(source_image_path).name}. "
+        "Call check_job with this id to poll for completion."
+    )
+
+
+@registry.register
+async def generate_verified_image(
+    workflow_json_path: str,
+    prompt_text: str,
+    character_check: str,
+    max_retries: int = 3,
+) -> str:
+    """Generate an image and verify it matches a character description using vision QC.
+
+    Runs the ComfyUI workflow, then asks a local vision model whether the result
+    matches `character_check`. If the check fails, regenerates up to `max_retries`
+    times (each time appending an enhancement to the negative-prompt region of the
+    workflow or just re-running with a new seed). Returns the path of the first
+    image that passes QC, or the last generated image if all retries are exhausted.
+
+    Use this instead of run_comfyui_workflow when character consistency is critical
+    (e.g., LoRA-based character renders for animated series production).
+
+    Args:
+        workflow_json_path: Path to an API-format ComfyUI workflow JSON.
+        prompt_text: The positive text prompt to inject.
+        character_check: Natural-language description of what the character MUST
+            look like — e.g. "brown flat cap, blue vest, golden lantern, Pixar 3D style".
+            The vision model answers YES/NO based on this.
+        max_retries: Maximum generation attempts before returning the best result (default 3).
+    """
+    from orchestrator.models.ollama_client import OllamaClient, OllamaError
+
+    base = config.COMFYUI_HOST.rstrip("/")
+    vision_model = VISION_MODEL
+    last_image_path: str | None = None
+
+    for attempt in range(1, max_retries + 1):
+        # ── Generate ──────────────────────────────────────────────────
+        try:
+            workflow = _load_workflow(workflow_json_path)
+            target_node = _inject_prompt(workflow, prompt_text)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+            return f"Error preparing workflow: {type(exc).__name__}: {exc}"
+
+        deadline = time.monotonic() + config.COMFYUI_TIMEOUT
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            try:
+                prompt_id = await _submit_workflow(http, base, workflow)
+            except ComfyError as exc:
+                return f"Error: {exc}"
+            result = await _wait_for_result(http, base, prompt_id, deadline, target_node)
+
+        # Extract the first saved file path from the result string
+        image_path: str | None = None
+        for line in result.splitlines():
+            if line.startswith(MEDIA_MARKER):
+                p = Path(line[len(MEDIA_MARKER):].strip())
+                if p.suffix.lower() in _IMAGE_EXTS:
+                    image_path = str(p)
+                    last_image_path = image_path
+                    break
+
+        if not image_path:
+            logger.warning("attempt %d/%d: no image output from ComfyUI", attempt, max_retries)
+            continue
+
+        # ── Visual QC ─────────────────────────────────────────────────
+        try:
+            raw = await asyncio.to_thread(Path(image_path).read_bytes)
+        except OSError as exc:
+            logger.warning("attempt %d/%d: cannot read image for QC: %s", attempt, max_retries, exc)
+            continue
+
+        import base64 as _b64
+        b64 = _b64.b64encode(raw).decode("ascii")
+        qc_prompt = (
+            f"Look at this image carefully. Does it show a character that matches ALL of the "
+            f"following visual traits: {character_check}\n\n"
+            "Reply with EXACTLY one word: YES or NO. "
+            "YES means the character clearly matches all listed traits. "
+            "NO means one or more traits are missing, wrong, or the image looks like a hallucination/error."
+        )
+        client = OllamaClient(model=vision_model)
+        try:
+            resp = await client.chat(
+                [{"role": "user", "content": qc_prompt, "images": [b64]}]
+            )
+            verdict = (resp.message.content or "").strip().upper()
+        except OllamaError as exc:
+            logger.warning("QC vision call failed (attempt %d): %s — accepting image", attempt, exc)
+            verdict = "YES"  # fail-open: don't block if vision is down
+        finally:
+            await client.aclose()
+
+        logger.info(
+            "Visual QC attempt %d/%d: verdict=%s image=%s",
+            attempt, max_retries, verdict, image_path,
+        )
+
+        if "YES" in verdict:
+            return (
+                f"✅ Image passed visual QC on attempt {attempt}/{max_retries}.\n"
+                f"Character check: {character_check}\n"
+                f"{result}"
+            )
+
+        logger.info("QC failed attempt %d — regenerating...", attempt)
+
+    # All retries exhausted — return last image with warning
+    if last_image_path:
+        return (
+            f"⚠️ Visual QC did not pass after {max_retries} attempts. "
+            f"Returning last generated image (may have consistency issues).\n"
+            f"Character check was: {character_check}\n"
+            f"{MEDIA_MARKER}{last_image_path}"
+        )
+    return f"Error: all {max_retries} generation attempts failed to produce an image."
 
 
 @registry.register

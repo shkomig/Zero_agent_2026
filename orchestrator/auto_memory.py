@@ -19,6 +19,7 @@ import logging
 
 from orchestrator import config
 from orchestrator.memory.store import MemoryStore
+from orchestrator.memory_guard import sanitize_for_memory
 from orchestrator.models.ollama_client import OllamaClient
 
 logger = logging.getLogger("zero_agent.auto_memory")
@@ -185,7 +186,13 @@ async def distill_and_store(
     facts, rules = _parse_sections(raw)
 
     async def _store(items: list[str], *, tag: str, dedupe: float) -> None:
-        for text in items:
+        for raw_text in items:
+            # Sanitize BEFORE persisting: a distilled fact/rule can echo poisoned
+            # tool output; never let an embedded instruction become durable memory.
+            text = sanitize_for_memory(raw_text)
+            if text is None:
+                logger.warning("dropped unsafe distilled %s: %s", tag, raw_text[:80])
+                continue
             try:
                 # Skip near-duplicates already in memory.
                 existing = await store.recall(text, k=1)

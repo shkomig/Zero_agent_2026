@@ -118,6 +118,13 @@ TASKS_DIR: str = os.getenv(
 # simply can't finish fails loudly instead of looping forever.
 SUPERVISOR_MAX_REPLANS: int = int(os.getenv("ZERO_AGENT_MAX_REPLANS", "3"))
 
+# Semantic ACCEPTANCE check: after reality verification (exists/compiles) passes on a
+# step that wrote a file, a strict LLM reviewer also judges whether the deliverable
+# genuinely fulfils the step's INTENT (catches shallow stubs / requirement violations
+# that compile cleanly). On FAIL the step is retried with the critique fed back. Off →
+# reverts to syntax-only "code as judge".
+SUPERVISOR_SEMANTIC_CHECK: bool = os.getenv("ZERO_AGENT_SEMANTIC_CHECK", "1") not in ("0", "false", "False")
+
 # Default model for the Supervisor/Planner vs. the Worker. Both default to
 # `qwopus-coder` (Qwopus3.6-27B-Coder, tools+thinking, Apache-2.0): it validated
 # 27/27 on the eval harness AND built a clean, complete Kotlin project. Using ONE
@@ -273,6 +280,95 @@ VOICE_MODEL: str = os.getenv("ZERO_AGENT_VOICE_MODEL", "").strip()
 # whole process tree). Builds can hang (gradle daemon, watch mode) — this caps it.
 BUILD_VERIFY_TIMEOUT: int = int(os.getenv("ZERO_AGENT_BUILD_VERIFY_TIMEOUT", "300"))
 
+# Max seconds a test suite may run before it's killed (run_tests). Tests can hang
+# on a stuck fixture or a server they spin up — same process-tree kill as builds.
+TEST_RUN_TIMEOUT: int = int(os.getenv("ZERO_AGENT_TEST_RUN_TIMEOUT", "300"))
+
+# smoke_run: how long to let an app boot before probing it, and the overall cap
+# on a single smoke run (boot + probe). The app is ALWAYS killed when the run ends.
+SMOKE_BOOT_GRACE: int = int(os.getenv("ZERO_AGENT_SMOKE_BOOT_GRACE", "8"))
+SMOKE_RUN_TIMEOUT: int = int(os.getenv("ZERO_AGENT_SMOKE_RUN_TIMEOUT", "45"))
+
+# --- Memory hygiene / consolidation -----------------------------------------
+# ChromaDB otherwise accumulates stale, duplicate, contradictory facts → the
+# agent gets "data-grounded" confidently-wrong. The consolidation pass dedups
+# near-identical memories (keep newest) and optionally decays very old auto-facts.
+# Cosine similarity at/above this counts two same-tag memories as duplicates.
+MEMORY_DEDUP_THRESHOLD: float = float(os.getenv("ZERO_AGENT_MEMORY_DEDUP_THRESHOLD", "0.97"))
+# Days after which an auto-distilled FACT is considered stale and dropped by the
+# decay pass. 0 = OFF (never expire) — the safe default; only `auto` facts decay,
+# never user RULES/preferences or lessons.
+MEMORY_TTL_DAYS: int = int(os.getenv("ZERO_AGENT_MEMORY_TTL_DAYS", "0"))
+# Tags eligible for TTL decay (comma list). Deliberately just auto facts.
+MEMORY_DECAY_TAGS: list[str] = [
+    t.strip() for t in os.getenv("ZERO_AGENT_MEMORY_DECAY_TAGS", "auto").split(",") if t.strip()
+]
+# --- Contradiction detection (LLM-judged) -----------------------------------
+# Beyond dedup (near-IDENTICAL) sits the harder case: two same-tag facts that are
+# topically related but state OPPOSITE things ("name is Khai" vs "name is Dan").
+# Embeddings alone can't tell "same" from "opposite", so a small local LLM judges
+# pairs in the gray band [SIM_LOW, DEDUP_THRESHOLD); on a clear contradiction the
+# OLDER memory is dropped (the newer supersedes). Conservative by construction:
+# protected tags (user RULES + lessons) are never auto-removed, only a clear YES
+# deletes, any error keeps both, and the per-pass LLM budget is capped.
+MEMORY_CONTRADICTION: bool = os.getenv("ZERO_AGENT_MEMORY_CONTRADICTION", "1") not in ("0", "false", "False")
+MEMORY_CONTRADICTION_SIM_LOW: float = float(os.getenv("ZERO_AGENT_MEMORY_CONTRADICTION_SIM_LOW", "0.80"))
+# The judge decides "older contradicts newer" — a subtle call (a restatement or a
+# DIFFERENT-but-coexisting fact is NOT a contradiction), so a weak 4B model produces
+# false positives. Use a stronger reasoning model here than the cheap distiller.
+MEMORY_CONTRADICTION_MODEL: str = os.getenv("ZERO_AGENT_MEMORY_CONTRADICTION_MODEL", "qwen3:32b")
+# Cap how many candidate pairs are sent to the LLM per pass (cost/time guard).
+MEMORY_CONTRADICTION_MAX_PAIRS: int = int(os.getenv("ZERO_AGENT_MEMORY_CONTRADICTION_MAX_PAIRS", "40"))
+# Tags whose memories are NEVER auto-removed by contradiction judging.
+MEMORY_PROTECTED_TAGS: list[str] = [
+    t.strip() for t in os.getenv("ZERO_AGENT_MEMORY_PROTECTED_TAGS", "preference,lesson").split(",") if t.strip()
+]
+
+# --- Idle-triggered memory hygiene ------------------------------------------
+# Run the consolidation pass automatically when the machine is unused, so memory
+# stays tidy without the user remembering to type /hygiene. Idle is REAL OS input
+# idle (GetLastInputInfo on Windows); on other platforms the trigger self-disables.
+MEMORY_IDLE_TRIGGER: bool = os.getenv("ZERO_AGENT_MEMORY_IDLE_TRIGGER", "1") not in ("0", "false", "False")
+# Seconds of no keyboard/mouse input before the machine counts as idle.
+MEMORY_IDLE_SECONDS: int = int(os.getenv("ZERO_AGENT_MEMORY_IDLE_SECONDS", "300"))
+# How often the background watcher checks the idle time.
+MEMORY_IDLE_CHECK_INTERVAL: int = int(os.getenv("ZERO_AGENT_MEMORY_IDLE_CHECK_INTERVAL", "60"))
+# Minimum seconds between two automatic passes (don't churn while idle).
+MEMORY_IDLE_MIN_GAP: int = int(os.getenv("ZERO_AGENT_MEMORY_IDLE_MIN_GAP", "3600"))
+
+# --- Self-improvement loop --------------------------------------------------
+# Periodically mines the Supervisor task history for recurring failure patterns,
+# diagnoses their root causes with a local LLM, and writes standing RULES to
+# ChromaDB (same channel as /always) so the agent stops repeating the same
+# mistakes across sessions.  Set to "0" to disable entirely.
+SELF_IMPROVE_ENABLED: bool = os.getenv("ZERO_AGENT_SELF_IMPROVE", "1") not in (
+    "0", "false", "False"
+)
+SELF_IMPROVE_DAYS: int = int(os.getenv("ZERO_AGENT_IMPROVE_DAYS", "7"))
+SELF_IMPROVE_MIN_FAILURES: int = int(os.getenv("ZERO_AGENT_IMPROVE_MIN_FAILURES", "3"))
+SELF_IMPROVE_MAX_RULES: int = int(os.getenv("ZERO_AGENT_IMPROVE_MAX_RULES", "5"))
+SELF_IMPROVE_MODEL: str = os.getenv("ZERO_AGENT_IMPROVE_MODEL", SUPERVISOR_MODEL)
+# Minimum gap (seconds) between two auto-triggered idle cycles (default: once/day).
+SELF_IMPROVE_MIN_GAP: int = int(os.getenv("ZERO_AGENT_IMPROVE_MIN_GAP", str(86400)))
+
+# --- Docker sandbox (host isolation for risky/untrusted shell) --------------
+# Opt-in: an ISOLATED place to run a command the agent doesn't fully trust (code
+# from a fetched page, an untested build script) without touching the host. The
+# normal execute_terminal_command still runs on the host (the agent operates the
+# real machine); this is the additive sealed alternative. No network by default,
+# capped memory/cpu/pids, all capabilities dropped, no privilege escalation.
+SANDBOX_IMAGE: str = os.getenv("ZERO_AGENT_SANDBOX_IMAGE", "python:3.12-slim")
+SANDBOX_NETWORK: str = os.getenv("ZERO_AGENT_SANDBOX_NETWORK", "none")  # none | bridge
+SANDBOX_MEMORY: str = os.getenv("ZERO_AGENT_SANDBOX_MEMORY", "512m")
+SANDBOX_CPUS: str = os.getenv("ZERO_AGENT_SANDBOX_CPUS", "1.0")
+SANDBOX_PIDS: int = int(os.getenv("ZERO_AGENT_SANDBOX_PIDS", "256"))
+SANDBOX_TIMEOUT: int = int(os.getenv("ZERO_AGENT_SANDBOX_TIMEOUT", "60"))
+# Default scratch dir mounted into the container at /work when no work_dir given.
+SANDBOX_WORKDIR: str = os.getenv(
+    "ZERO_AGENT_SANDBOX_WORKDIR",
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "sandbox"),
+)
+
 # --- Reserved ports ---------------------------------------------------------
 # Ports the agent must treat as ALWAYS occupied: never bind a project's dev/server
 # to them (avoids clobbering Zero's own UI or a service the user keeps running, and
@@ -304,6 +400,16 @@ FAITHFULNESS: bool = os.getenv("ZERO_AGENT_FAITHFULNESS", "1").lower() in (
     "1",
     "true",
     "yes",
+)
+
+# --- Cross-session task context ---------------------------------------------
+# Persists what Zero is actively working on so a new session resumes seamlessly.
+# session_state.json  — current task/step (written by update_task_state tool)
+# task_journal.md     — append-only action log (last 20 lines injected at start)
+# last_summary.txt    — rolling [[ZERO_SUMMARY]] saved after each compression
+# All reads happen once at session start (no per-turn cost). Set =0 to disable.
+SESSION_CONTEXT_ENABLED: bool = os.getenv("ZERO_AGENT_SESSION_CONTEXT", "1").lower() in (
+    "1", "true", "yes"
 )
 
 # --- Projects (named knowledge bases, ChatGPT-Projects style) ---------------
@@ -359,6 +465,20 @@ HITL_TOOLS: set[str] = _parse_csv_set(
         "download_file",
         "register_gguf_model",  # mutates the Ollama model registry
     },
+)
+
+# Seconds the UI waits for an Approve/Deny answer before giving up. 0 (default)
+# means WAIT FOREVER — the run pauses indefinitely until you decide, so a prompt
+# you missed never auto-denies and silently kills the run. A Windows toast fires
+# when the prompt appears (see HITL_NOTIFY) so you notice even away from the tab.
+HITL_TIMEOUT: int = int(os.getenv("ZERO_AGENT_HITL_TIMEOUT", "0"))
+
+# Fire a native Windows toast notification when the agent asks for approval, so
+# you're alerted even if the browser tab isn't focused. Best-effort, never raises.
+HITL_NOTIFY: bool = os.getenv("ZERO_AGENT_HITL_NOTIFY", "1").lower() in (
+    "1",
+    "true",
+    "yes",
 )
 
 # Max bytes returned by read_file (protects context window + RAM).
@@ -500,4 +620,28 @@ RESEARCH_MAX_SUBQUERIES: int = int(os.getenv("ZERO_AGENT_RESEARCH_SUBQUERIES", "
 # Max characters of the accumulated corpus handed to the synthesis step.
 RESEARCH_SYNTH_MAX_CHARS: int = int(
     os.getenv("ZERO_AGENT_RESEARCH_SYNTH_CHARS", "14000")
+)
+
+# --- MCP (Model Context Protocol) client ------------------------------------
+# Zero can connect to any MCP server (local subprocess or SSE/HTTP endpoint)
+# and call its tools via mcp_connect / mcp_list / mcp_call.
+# Set MCP_SERVERS to a JSON array of server definitions for auto-connect at
+# startup.  Example (in .env):
+#   ZERO_AGENT_MCP_SERVERS=[{"name":"fs","type":"stdio","command":"uvx","args":["mcp-server-filesystem","C:\\projects"]}]
+MCP_ENABLED: bool = os.getenv("ZERO_AGENT_MCP", "1") not in ("0", "false", "False")
+
+def _parse_mcp_servers(raw: str) -> list[dict]:
+    """Parse ZERO_AGENT_MCP_SERVERS JSON array (empty/invalid → [])."""
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    try:
+        import json as _json
+        result = _json.loads(raw)
+        return result if isinstance(result, list) else []
+    except Exception:
+        return []
+
+MCP_SERVERS: list[dict] = _parse_mcp_servers(
+    os.getenv("ZERO_AGENT_MCP_SERVERS", "")
 )

@@ -87,6 +87,18 @@ def graphify_project(path: str, mode: str = "code", timeout_s: int = 0) -> str:
     if not proj.is_dir():
         return f"Error: not a directory: {proj}"
 
+    # Guard: refuse drive roots (C:\, D:\, etc.) — scanning an entire drive
+    # produces hundreds of thousands of files, causing timeouts or OOM crashes.
+    # The user almost certainly wants a specific project folder, not the whole drive.
+    if proj == proj.anchor or str(proj).rstrip("/\\") == proj.drive:
+        return (
+            f"Error: '{proj}' is a drive root - graphify cannot scan an entire drive "
+            f"(too many files). Please specify a project folder instead, e.g.:\n"
+            f"  C:\\AI-ALL-PRO\\zero-agent\n"
+            f"  C:\\projects\\MyProject\n"
+            f"Which folder on {proj.drive} did you want to graph?"
+        )
+
     py = _find_graphify_python()
     if not py:
         return (
@@ -148,3 +160,175 @@ def graphify_project(path: str, mode: str = "code", timeout_s: int = 0) -> str:
         f"  Raw graph         : {outdir / 'graph.json'}\n\n"
         f"{summary}"
     )
+
+
+# ── Known project roots — every real code project on this machine ─────────────
+# Excludes: data/models/assets folders, backups, venvs, system dirs.
+_KNOWN_PROJECTS: list[str] = [
+    # Zero Agent & AI tools
+    r"C:\AI-ALL-PRO\zero-agent",
+    r"C:\AI-ALL-PRO\LangChain",
+    r"C:\AI-ALL-PRO\Learning_System",
+    r"C:\AI-ALL-PRO\STOCK",
+    r"C:\AI-ALL-PRO\Trading_System",
+    r"C:\AI-ALL-PRO\Translation-System",
+    r"C:\AI-ALL-PRO\ZERO-TRADING-EXPERT",
+    r"C:\AI-ALL-PRO\AI-Media-Stack",
+    r"C:\AI-ALL-PRO\RAG",
+    r"C:\AI-ALL-PRO\T-R",
+    r"C:\AI-ALL-PRO\ScreenPipe",
+    # Project Mair / media pipeline
+    r"C:\AI-MEDIA-RTX5090\Project_Mair",
+    r"C:\AI-MEDIA-RTX5090\Project_Mair_3D_v1",
+    r"C:\AI-MEDIA-RTX5090\Project_Mair_Full_AI",
+    r"C:\AI-MEDIA-RTX5090\Project_LTX23",
+    r"C:\AI-MEDIA-RTX5090\Studio_Zero",
+    r"C:\AI-MEDIA-RTX5090\agent",
+    r"C:\AI-MEDIA-RTX5090\ai-toolkit",
+    # Other projects
+    r"C:\projects\Android Developer",
+    r"C:\projects\change-digital-solutions",
+    r"C:\projects\phone-agent",
+    r"C:\projects\rtx-train-video-prompt",
+    # Vs-Pro
+    r"C:\Vs-Pro\Prompt_engineered\Engineered-prompt",
+    r"C:\Vs-Pro\A-G",
+    r"C:\Vs-Pro\Ai_OCR",
+    r"C:\Vs-Pro\TR",
+    r"C:\Vs-Pro\homework-hero-ai",
+    # Web / other
+    r"C:\Users\User\Desktop\Change\Change_site",
+    r"C:\TRES",
+]
+
+# Merged graph output directory (the "one big graph of everything").
+_SYSTEM_GRAPH_DIR = r"C:\AI-ALL-PRO\SYSTEM_GRAPH"
+
+
+@registry.register
+def graphify_all_projects(
+    projects: list[str] | None = None,
+    skip_existing: bool = True,
+    build_merged: bool = True,
+) -> str:
+    """Build a knowledge graph for every code project on this machine, then
+    merge them into one system-wide graph at C:\\AI-ALL-PRO\\SYSTEM_GRAPH.
+
+    Use this when the user asks to "graphify everything / all projects / the
+    whole system" or "update all graphs". Runs graphify in fast code-AST mode
+    on each project (no LLM needed, seconds per project).
+
+    Args:
+        projects:      List of absolute paths to graph. Defaults to the full
+                       known-project list for this machine.
+        skip_existing: If True (default), skip projects whose graph.json is
+                       already up-to-date (modified today). Set False to force
+                       a full rebuild of every project.
+        build_merged:  If True (default), after all per-project graphs are
+                       built, merge them all into SYSTEM_GRAPH.
+    """
+    py = _find_graphify_python()
+    if not py:
+        return (
+            "Error: graphify is not installed. Run: pip install graphifyy"
+        )
+
+    targets = [Path(p) for p in (projects or _KNOWN_PROJECTS)]
+    existing = [p for p in targets if p.is_dir()]
+    missing  = [p for p in targets if not p.is_dir()]
+
+    results: list[str] = []
+    graph_jsons: list[Path] = []
+
+    for proj in existing:
+        outdir = _out_dir(proj)
+        graph_json = outdir / "graph.json"
+
+        # Fast skip: graph built today and skip_existing requested.
+        if skip_existing and graph_json.exists():
+            import time
+            age_hours = (time.time() - graph_json.stat().st_mtime) / 3600
+            if age_hours < 20:
+                results.append(f"  SKIP  {proj.name} (graph is {age_hours:.0f}h old)")
+                graph_jsons.append(graph_json)
+                continue
+
+        try:
+            r = subprocess.run(
+                [py, "-m", "graphify", "update", str(proj)],
+                cwd=str(proj), capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=300,
+            )
+            if r.returncode == 0 and graph_json.exists():
+                last_line = (r.stdout or "").strip().splitlines()[-1] if (r.stdout or "").strip() else ""
+                results.append(f"  OK    {proj.name}  — {last_line}")
+                graph_jsons.append(graph_json)
+            else:
+                err = (r.stderr or r.stdout or "")[-200:].strip()
+                results.append(f"  FAIL  {proj.name}  — {err}")
+        except subprocess.TimeoutExpired:
+            results.append(f"  TIMEOUT {proj.name} (>300s — too large, skip)")
+        except OSError as exc:
+            results.append(f"  ERROR {proj.name} — {exc}")
+
+    # ── Merged system-wide graph ──────────────────────────────────────────────
+    # graphify CLI: `merge-graphs g1.json g2.json ... --out merged.json`
+    # This produces a single merged graph.json; the HTML viewer uses the same file.
+    merged_out = None
+    if build_merged and len(graph_jsons) >= 2:
+        merged_dir = Path(_SYSTEM_GRAPH_DIR)
+        merged_dir.mkdir(parents=True, exist_ok=True)
+        merged_json = merged_dir / "graph.json"
+        try:
+            r = subprocess.run(
+                [py, "-m", "graphify", "merge-graphs",
+                 *[str(g) for g in graph_jsons],
+                 "--out", str(merged_json)],
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=180,
+            )
+            if r.returncode == 0 and merged_json.exists():
+                # Copy graph.html viewer from any successful per-project output
+                # so the merged JSON can be opened interactively.
+                for g in graph_jsons:
+                    src_html = g.parent / "graph.html"
+                    if src_html.exists():
+                        import shutil as _shutil
+                        dest_html = merged_dir / "graph.html"
+                        _shutil.copy2(src_html, dest_html)
+                        break
+                merged_out = merged_json
+                node_count = "?"
+                try:
+                    import json as _json
+                    data = _json.loads(merged_json.read_text(encoding="utf-8"))
+                    node_count = len(data.get("nodes", []))
+                except Exception:
+                    pass
+                results.append(
+                    f"\n  MERGED -> {merged_dir}\\graph.json  ({node_count} nodes)\n"
+                    f"  Open: {merged_dir}\\graph.html  (viewer + merged data)"
+                )
+            else:
+                err = (r.stderr or r.stdout or "")[-300:].strip()
+                results.append(
+                    f"\n  MERGED: merge-graphs failed — {err}\n"
+                    f"  Per-project graphs are all ready individually."
+                )
+        except subprocess.TimeoutExpired:
+            results.append("\n  MERGED: timed out (>180s). Per-project graphs are ready.")
+        except OSError as exc:
+            results.append(f"\n  MERGED: OS error — {exc}")
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+    ok    = sum(1 for r in results if r.strip().startswith("OK"))
+    skip  = sum(1 for r in results if r.strip().startswith("SKIP"))
+    fail  = sum(1 for r in results if r.strip().startswith(("FAIL", "TIMEOUT", "ERROR")))
+    lines = [
+        f"graphify_all_projects: {ok} built, {skip} skipped (fresh), {fail} failed "
+        f"out of {len(existing)} projects ({len(missing)} paths not found on disk).",
+        "",
+    ] + results
+    if missing:
+        lines += ["", "Paths not found (skipped):"] + [f"  - {p}" for p in missing]
+    return "\n".join(lines)

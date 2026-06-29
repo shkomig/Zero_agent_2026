@@ -36,9 +36,14 @@ engine, long-term vector memory, local voice, and a Human-in-the-Loop safety gat
 ## ✨ Highlights
 
 - **🧠 Autonomous builds** — `/agent <goal>`: a Supervisor plans the goal into
-  steps, a Worker executes each, and a **RealityVerifier** checks the result is
-  *actually* on disk (compiles / exists) before calling it done — no "claimed
-  success" hallucinations. Retries and replans on failure.
+  steps, a Worker executes each, and verification goes beyond "claimed success":
+  a **RealityVerifier** confirms the named deliverable is *actually* on disk and
+  compiles, an **intent check** judges it does the *right* thing (not a shallow
+  stub), an **API-preservation guard** blocks a rewrite that silently drops a public
+  function other code calls, and a web app is verified by **smoke-running it
+  headless** (start → probe → kill), never a hanging `run`. It also operates in the
+  directory the goal names (audit/upgrade existing code in place). Retries/replans on
+  failure.
 - **🔬 High-grade research** — `/research <question>`: iterate-until-confident
   (decompose → search → assess gaps → search more), every web source tagged
   **PRIMARY / REPUTABLE / SECONDARY / UNRATED**, and a synthesis **calibrated to

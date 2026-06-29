@@ -137,6 +137,52 @@ class MemoryStore:
             logger.exception("delete_by_tag failed for tag=%r", tag)
             return 0
 
+    def all_items(self, *, with_embeddings: bool = True) -> list[dict[str, Any]]:
+        """Every stored memory as {id, text, tags, created[, embedding]}.
+
+        Used by the memory-hygiene pass to dedup / decay the whole collection.
+        Embeddings are returned straight from Chroma (no re-embedding, no Ollama),
+        so this is cheap and offline.
+        """
+        include = ["documents", "metadatas"] + (["embeddings"] if with_embeddings else [])
+        try:
+            res = self._collection.get(include=include)
+        except Exception:  # noqa: BLE001
+            logger.exception("all_items failed")
+            return []
+        ids = res.get("ids") or []
+        docs = res.get("documents") or []
+        metas = res.get("metadatas") or []
+        embs = res.get("embeddings")
+        if embs is None:
+            embs = [None] * len(ids)
+        items: list[dict[str, Any]] = []
+        for i, d, m, e in zip(ids, docs, metas, embs):
+            meta = m or {}
+            item = {
+                "id": i,
+                "text": d,
+                "tags": meta.get("tags", ""),
+                "created": meta.get("created", 0),
+            }
+            if with_embeddings:
+                item["embedding"] = list(e) if e is not None else None
+            items.append(item)
+        return items
+
+    def delete_ids(self, ids: list[str]) -> int:
+        """Delete memories by id. Returns how many were requested for deletion."""
+        ids = [i for i in ids if i]
+        if not ids:
+            return 0
+        try:
+            self._collection.delete(ids=ids)
+            logger.info("deleted %d memories by id", len(ids))
+            return len(ids)
+        except Exception:  # noqa: BLE001
+            logger.exception("delete_ids failed")
+            return 0
+
     def count(self) -> int:
         """Total number of stored memories."""
         return self._collection.count()

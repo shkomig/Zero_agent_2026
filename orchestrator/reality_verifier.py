@@ -109,8 +109,15 @@ class RealityVerifier:
             # No explicit path to check — don't block on a directory task.
             return (True, "Directory task with no explicit path — trusting the result.")
 
-        candidates = self._extract_paths(f"{task_description}\n{agent_result}")
-        resolved = self._resolve(candidates, cwd)
+        # Paths named in the TASK are the intended DELIVERABLES; paths that appear
+        # ONLY in the result are incidental (e.g. files the worker read/quoted). We
+        # must judge the deliverable, not be fooled by an incidentally-mentioned file
+        # that happens to exist — the failure where a "create AUDIT_REPORT.md" step is
+        # marked done because the result quoted app.py/config.py (which exist) while
+        # the report itself was never written.
+        task_paths = self._resolve(self._extract_paths(task_description), cwd)
+        result_paths = self._resolve(self._extract_paths(agent_result), cwd)
+        resolved = list(dict.fromkeys(task_paths + result_paths))
 
         # Creation task but we found NO file reference anywhere → the worker very
         # likely only narrated. That's the classic failure we must catch.
@@ -121,6 +128,20 @@ class RealityVerifier:
                 "result and nothing verifiable landed on disk. The worker may have "
                 "only described the action instead of calling write_file.",
             )
+
+        # The deliverable check: when the TASK names target file(s), EACH must exist
+        # on disk for a creation task — an existing file mentioned only in the result
+        # cannot substitute for the missing deliverable.
+        if is_creation and task_paths:
+            missing_deliverables = [p for p in task_paths if not os.path.isfile(p)]
+            if missing_deliverables:
+                return (
+                    False,
+                    "The task's target file was not created on disk: "
+                    + ", ".join(missing_deliverables)
+                    + ". The worker likely only described the result instead of "
+                    "writing the file (other files it merely mentioned don't count).",
+                )
 
         if not resolved:
             return (True, "No file artifacts to verify for this task type.")

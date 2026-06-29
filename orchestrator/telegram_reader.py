@@ -60,6 +60,7 @@ async def read_channel_messages(
     hours: int = 6,
     limit_per_channel: int = 30,
     min_length: int = 50,
+    skip_seen: bool = True,
 ) -> list[dict[str, Any]]:
     """Fetch recent messages from a list of channel usernames / IDs.
 
@@ -138,6 +139,15 @@ async def read_channel_messages(
                 })
     finally:
         await client.disconnect()
+
+    if skip_seen:
+        from orchestrator import news_memory
+        original_count = len(results)
+        results = news_memory.filter_new(results)
+        news_memory.mark_seen(results)
+        skipped = original_count - len(results)
+        if skipped:
+            logger.info("telegram_reader: dedup filtered %d already-seen items", skipped)
 
     return results
 

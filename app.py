@@ -95,6 +95,7 @@ from orchestrator.tools import cookbook_tools          # noqa: F401 — register
 from orchestrator.tools import github_tools            # noqa: F401 — registers get_github_trending / get_github_repo_info
 from orchestrator.tools import telegram_channel_tools  # noqa: F401 — registers read_telegram_channels / list_telegram_channels
 from orchestrator.tools import tws_tools               # noqa: F401 — registers launch_tws / check_tws_status / stop_tws
+from orchestrator.tools import rss_tools               # noqa: F401 — registers read_rss_feeds
 from orchestrator import telegram_notify as _tg_notify_module  # noqa: F401 — registers send_telegram_report tool
 from orchestrator import cookbook as _cookbook
 from orchestrator import mcp_client as _mcp_client

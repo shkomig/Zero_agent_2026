@@ -38,3 +38,6 @@ faster-whisper>=1.0
 # The Bot API bridge (telegram_bot.py) already uses httpx above; telethon is the
 # full client for reading channels you're subscribed to.
 telethon>=1.36
+
+# RSS feed reader — used by read_rss_feeds tool for real-time news monitoring.
+feedparser>=6.0

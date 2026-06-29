@@ -12,7 +12,39 @@ this file captures the concrete edits between/around those phases.
 
 ---
 
+## 2026-06-29 (update 4)
+
+### File upload to Projects via Telegram
+
+Users can now send any document to the Telegram bot while a project is active
+and it is automatically chunked and stored in the project knowledge base.
+
+- `TelegramAPI.get_file_url()` / `download_bytes()` — download from Telegram CDN
+- `_extract_text(data, filename)` — PDF via pypdf, all UTF-8 text/code formats
+- `_handle_file_message()` — chunk at 800 chars / 100 overlap, `add_knowledge` per chunk
+- `_handle_message()` — routes `document` messages before the text guard
+
+**Files:** `telegram_bot.py`
+
+---
+
 ## 2026-06-29 (update 3)
+
+### TWS full auto-login via WM_CHAR PostMessage
+
+Full credential automation achieved after exhausting IBC, SendKeys, pyautogui,
+and clipboard paste (all dropped/ignored by Java Swing). Solution: `PostMessage`
+WM_CHAR messages directly to the Java message queue, bypassing SendInput filtering.
+
+- `_wm_type(hwnd, text)` — posts WM_CHAR per character directly to SunAwtFrame
+- `_fill_credentials(hwnd, username, password)` — username → Tab → password → Enter
+- `telegram_bot.py` — added missing `tws_tools` import (was only in app.py)
+
+**Files:** `orchestrator/tools/tws_tools.py`, `telegram_bot.py`
+
+---
+
+## 2026-06-29 (update 3a)
 
 ### TWS launch + login nudge at 16:00
 

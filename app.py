@@ -201,26 +201,28 @@ async def _starters() -> "list[cl.Starter]":
     """One-click example prompts shown on the empty welcome screen."""
     return [
         cl.Starter(
-            label="🤖 Build something (multi-step agent)",
-            message="/agent create a small Hebrew landing page for a coffee shop "
-            "(index.html + style.css) in C:\\projects\\coffee",
+            label="📡 עדכון חדשות בוקר",
+            message="קרא חדשות מטלגרם ו-RSS (hours=8) וכתוב דוח חדשות בעברית מסודר לפי קטגוריות: ביטחון, כלכלה, טכנולוגיה, בינלאומי, כללי. שלח לטלגרם עם send_telegram_report.",
         ),
         cl.Starter(
-            label="🔭 Deep research a topic",
-            message="Do thorough, up-to-date web research and answer with cited "
-            "sources: what are the latest developments in local AI agents?",
+            label="📈 דוח מניות AI",
+            message="בצע מחקר על מניות NVDA, AMD, MSFT, GOOGL, META, ARM, PLTR. חפש חדשות היום, תנועות מחיר, המלצות אנליסטים. כתוב דוח בעברית עם המלצה לכל מניה ושלח לטלגרם.",
         ),
         cl.Starter(
-            label="🎨 Generate an image",
-            message="Generate an image of a futuristic city at sunset, cinematic.",
+            label="🔥 GitHub Trending AI",
+            message="הבא את הפרויקטים הטרנדיים ב-GitHub היום עם get_github_trending category=ai. עבור כל פרויקט כתוב בעברית: שם, מה הוא עושה, כמה כוכבים, ולמה מעניין. שלח לטלגרם.",
         ),
         cl.Starter(
-            label="🧠 Remember a fact about me",
-            message="Remember that I prefer concise, technical answers.",
+            label="📋 משימות מתוזמנות",
+            message="/scheduled",
         ),
         cl.Starter(
-            label="📈 Live stock price",
-            message="What is the current price of NVDA?",
+            label="🤖 בנה פרויקט",
+            message="/agent ",
+        ),
+        cl.Starter(
+            label="🔭 מחקר מעמיק",
+            message="/research ",
         ),
     ]
 
@@ -522,29 +524,8 @@ async def start() -> None:
         block = session_context.build_session_block(history_has_summary=False)
         session_context.inject_session_message(history, block)
 
-    proj_note = f" · project `{active}`" if active else ""
-    n_tools = len(registry.names())
-    await cl.Message(
-        content=(
-            f"**Zero Agent** ready · model `{model}`{proj_note}{note}\n\n"
-            "🛠️ **Capabilities** — files · web research · images/video · long-term "
-            f"memory · system & ops · model management · knowledge graphs  ·  _{n_tools} tools_\n\n"
-            "⚡ **Power commands**\n"
-            "- `/agent <goal>` — autonomous multi-step build (plan → do → verify)\n"
-            "- `/research <question>` — deep, source-tiered, **calibrated** research\n"
-            "- `/projects` · `/project <name>` · `/learn <text>` — project knowledge bases\n"
-            "- `/always <rule>` · `/lessons` — what I remember & learned\n"
-            "- `/status` · `/cleartask` — show / clear active task context\n"
-            "- `/check_job [job_id]` — check a background video/render job\n"
-            "- `/scheduled` · `/cancel <id>` — view / cancel scheduled tasks\n"
-            "- `/hygiene` — tidy my memory (dedup; `/hygiene dry` to preview)\n"
-            "- `/improve` — self-improvement: analyse failures → add rules (`/improve dry` to preview · `/improve stats`)\n"
-            "- `/cookbook [category]` — model catalog: what to run & why (filter: coding/vision/fast/embedding)\n"
-            "- `/mcp connect <name> <cmd> [args]` · `/mcp list` — wire up MCP servers, see their tools\n\n"
-            "_Composer: 🔭 Research · 🎨 Image · 🎥 Video · ⏰ Schedule · 🧠 Remember · 🎤 voice · "
-            "models/project from ⚙️ settings._"
-        )
-    ).send()
+    # No welcome message — Chainlit starters serve as the welcome screen.
+    # Sending any message here hides the starters immediately.
 
 
 @cl.on_settings_update

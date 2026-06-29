@@ -205,3 +205,98 @@ async def cancel_scheduled_task(task_id: str) -> str:
     if removed:
         return f"✅ Task `{task_id}` cancelled and removed."
     return f"Task `{task_id}` not found. Check list_scheduled_tasks() for valid ids."
+
+
+@registry.register
+async def update_scheduled_task(
+    task_id: str,
+    prompt: str = "",
+    cron: str = "",
+    label: str = "",
+    model: str = "",
+    hours: int = 0,
+) -> str:
+    """Edit an existing scheduled task — change its prompt, schedule, model, or hours window.
+
+    Use this when the user wants to modify a task without recreating it.
+    To change just the hours window inside a news/RSS prompt, pass hours=24
+    and Zero will replace the old hours=N value automatically.
+
+    Args:
+        task_id: Task id from list_scheduled_tasks() or /scheduled (e.g. 'telegram_news_daily').
+        prompt:  Full new prompt text (replaces current prompt entirely).
+        cron:    New cron expression, e.g. '0 8 * * *' for 08:00 daily.
+        label:   New human-readable label shown in /scheduled.
+        model:   New model name to run the task with.
+        hours:   Shortcut — replaces every 'hours=N' occurrence in the prompt with this value.
+                 Only used when prompt is not provided.
+    """
+    import re
+    from orchestrator import scheduler as sched_mod
+
+    tasks = sched_mod._load_tasks()
+    tid = task_id.strip()
+
+    if tid not in tasks:
+        available = ", ".join(tasks.keys()) or "none"
+        return (
+            f"❌ Task `{tid}` not found.\n"
+            f"Available task ids: {available}\n"
+            "Use list_scheduled_tasks() to see all tasks."
+        )
+
+    task = tasks[tid]
+    changes: list[str] = []
+
+    if prompt:
+        task["prompt"] = prompt
+        changes.append(f"prompt updated ({len(prompt)} chars)")
+
+    elif hours > 0:
+        old_prompt = task.get("prompt", "")
+        new_prompt = re.sub(r"hours=\d+", f"hours={hours}", old_prompt)
+        # Also bump limits proportionally when hours grow
+        new_prompt = re.sub(r"limit_per_channel=\d+", f"limit_per_channel={hours * 2}", new_prompt)
+        new_prompt = re.sub(r"limit_per_feed=\d+", f"limit_per_feed={max(8, hours // 2)}", new_prompt)
+        task["prompt"] = new_prompt
+        changes.append(f"hours window → {hours}h")
+
+    if cron:
+        task["cron"] = cron
+        # Re-register with APScheduler
+        try:
+            scheduler = sched_mod.get_scheduler()
+            job = scheduler.get_job(tid)
+            if job:
+                job.reschedule(trigger="cron", **_cron_kwargs(cron))
+                changes.append(f"cron → {cron} (rescheduled live)")
+            else:
+                changes.append(f"cron → {cron} (saved; will apply on restart)")
+        except Exception as exc:
+            changes.append(f"cron → {cron} (saved; live reschedule failed: {exc})")
+
+    if label:
+        task["label"] = label
+        changes.append(f"label → {label}")
+
+    if model:
+        task["model"] = model
+        changes.append(f"model → {model}")
+
+    if not changes:
+        return "Nothing to update — provide at least one of: prompt, cron, label, model, hours."
+
+    sched_mod._save_tasks(tasks)
+
+    return (
+        f"✅ Task `{tid}` updated:\n"
+        + "\n".join(f"  • {c}" for c in changes)
+        + f"\n\nCurrent prompt preview:\n{task['prompt'][:200]}…"
+    )
+
+
+def _cron_kwargs(cron_expr: str) -> dict:
+    """Convert '0 12 * * *' → APScheduler CronTrigger kwargs."""
+    fields = cron_expr.strip().split()
+    keys = ["minute", "hour", "day", "month", "day_of_week"]
+    return {k: v for k, v in zip(keys, fields) if v != "*"}

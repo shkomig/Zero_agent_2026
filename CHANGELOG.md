@@ -5,6 +5,45 @@ sessions. Newest first. Each entry notes **what** changed, **why**, and the
 **files** touched. Phase-level planning + status lives in [ROADMAP.md](ROADMAP.md);
 this file captures the concrete edits between/around those phases.
 
+---
+
+### 2026-06-29 — UI upgrade · update_scheduled_task tool · worker model fix
+
+**Why:** (1) Chainlit welcome message was hiding starter buttons — removed it.
+(2) Zero failed to edit `tasks.json` when asked to extend news hours — it used `/agent`
+which searched the wrong directory. Added a direct tool so Zero never needs `/agent` for
+self-editing. (3) `qwopus-coder` showed confused behaviour (language mixing, wrong paths,
+hallucinated channel names) on non-coding tasks — reverted worker/supervisor default to
+`qwen3:32b`.
+
+**What changed:**
+
+- **`app.py`** — removed auto welcome `cl.Message` from `on_chat_start`; Chainlit starters
+  now serve as the welcome screen (matches Claude.ai UX). Shortened starters to 6 task-relevant
+  prompts: עדכון חדשות · דוח מניות · GitHub Trending · משימות · /agent · /research.
+
+- **`orchestrator/tools/scheduler_tools.py`** — added `update_scheduled_task(task_id, prompt,
+  cron, label, model, hours)`. The `hours` shortcut does regex replace of `hours=N` inside the
+  prompt string — Zero can now say "שנה את שעות החדשות ל-24" and it just works, no `/agent` needed.
+
+- **`orchestrator/config.py`** — `SUPERVISOR_MODEL` and `WORKER_MODEL` default changed from
+  `qwopus-coder` → `qwen3:32b`. Override via `ZERO_AGENT_WORKER_MODEL` in `.env` if you want
+  `qwopus-coder` for pure coding tasks.
+
+- **`.chainlit/config.toml`** — `cot = "tool_call"` (was `"full"`); logo set to
+  `/public/logo.svg`; cache-busting `?v=3` on custom CSS.
+
+- **`public/custom.css`** — real Chainlit class names (`.ai-message`, `.step`, `.message-name`);
+  teal left-border on AI messages, step cards softer, monospace font, RTL fix, scrollbars.
+
+- **`public/logo.svg`** — new Zero Agent logo: teal "Z" on dark circle background.
+
+- **`data/scheduler/tasks.json`** — `telegram_news_daily` hours bumped: `hours=8→24`,
+  `limit_per_channel=30→50`, `limit_per_feed=8→15`. (Written by user+Claude, not by Zero.)
+
+**Files:** `app.py` · `orchestrator/tools/scheduler_tools.py` · `orchestrator/config.py` ·
+`.chainlit/config.toml` · `public/custom.css` · `public/logo.svg`
+
 > Baseline: everything before the first entry below (the single-agent loop,
 > 13 tools, Chainlit UI, observability, graceful degradation, vector memory,
 > inline images + async ComfyUI jobs) is documented in `ROADMAP.md` and the

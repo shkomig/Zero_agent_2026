@@ -1,29 +1,69 @@
-/* Zero Agent — small, reliable cosmetic tweaks only.
-   The accent COLOUR is set the supported way in public/theme.json (window.theme),
-   because Chainlit injects those CSS variables with authority and overrides any
-   :root rule here. This file keeps only selectors that are safe across versions. */
+/* Zero Agent — custom styling using actual Chainlit class names (v2.11.1).
+   Accent colour lives in theme.json; Chainlit injects those vars with authority. */
 
-/* Code & monospace: a cleaner programming font where available. */
+/* ── Monospace font ───────────────────────────────────────────── */
 pre, code, kbd {
   font-family: "JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace;
+  font-size: 0.875em;
 }
 pre {
-  border-radius: 10px;
+  border-radius: 10px !important;
 }
 
-/* Hebrew / RTL: let mixed-direction paragraphs lay out naturally. */
-p {
+/* ── Hebrew / RTL ─────────────────────────────────────────────── */
+p, li {
   unicode-bidi: plaintext;
+  line-height: 1.72;
 }
 
-/* Slimmer, themed scrollbars (uses the teal --primary from theme.json). */
+/* ── Scrollbars ───────────────────────────────────────────────── */
 * {
   scrollbar-width: thin;
-  scrollbar-color: hsl(var(--primary) / 0.5) transparent;
+  scrollbar-color: hsl(var(--primary) / 0.4) transparent;
 }
-*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-thumb {
-  background: hsl(var(--primary) / 0.45);
+  background: hsl(var(--primary) / 0.4);
   border-radius: 6px;
 }
-*::-webkit-scrollbar-thumb:hover { background: hsl(var(--primary) / 0.7); }
+*::-webkit-scrollbar-thumb:hover { background: hsl(var(--primary) / 0.65); }
+
+/* ── AI / assistant message: teal left border ────────────────── */
+.ai-message {
+  border-left: 3px solid hsl(var(--primary) / 0.5);
+  padding-left: 12px;
+  margin-bottom: 6px;
+}
+
+/* ── Tool step cards ─────────────────────────────────────────── */
+.step {
+  background: hsl(var(--primary) / 0.05) !important;
+  border-left: 2px solid hsl(var(--primary) / 0.3) !important;
+  border-radius: 6px !important;
+  padding: 6px 10px !important;
+  margin: 3px 0 !important;
+}
+
+/* ── Inline code highlight ────────────────────────────────────── */
+:not(pre) > code {
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* ── AI message appear animation ─────────────────────────────── */
+.ai-message {
+  animation: zeroFadeIn 0.2s ease-out both;
+}
+@keyframes zeroFadeIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Author name label: smaller, muted ───────────────────────── */
+.message-name {
+  font-size: 0.78rem !important;
+  opacity: 0.65;
+  letter-spacing: 0.04em;
+}

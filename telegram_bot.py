@@ -281,6 +281,27 @@ class TelegramAPI:
         except (httpx.HTTPError, RuntimeError) as exc:
             logger.warning("setMyCommands failed: %s", exc)
 
+    async def get_file_url(self, file_id: str) -> str | None:
+        """Resolve a Telegram file_id to a download URL."""
+        try:
+            data = await self._call("getFile", file_id=file_id)
+            file_path = (data.get("result") or {}).get("file_path")
+            if not file_path:
+                return None
+            token = self.base.split("/bot")[-1]
+            return f"https://api.telegram.org/file/bot{token}/{file_path}"
+        except (httpx.HTTPError, RuntimeError):
+            return None
+
+    async def download_bytes(self, url: str) -> bytes | None:
+        """Download raw bytes from a Telegram file URL."""
+        try:
+            resp = await self._http.get(url)
+            resp.raise_for_status()
+            return resp.content
+        except (httpx.HTTPError, OSError):
+            return None
+
     async def send_file(self, chat_id: int, path: Path, *, as_photo: bool) -> None:
         """Upload a local file as a photo (images) or document (video/other)."""
         method = "sendPhoto" if as_photo else "sendDocument"
@@ -613,6 +634,113 @@ async def _run_agent_turn(
             )
 
 
+_TEXT_EXTENSIONS = {
+    ".txt", ".md", ".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml",
+    ".toml", ".ini", ".cfg", ".env", ".sh", ".bat", ".ps1", ".csv", ".html",
+    ".htm", ".xml", ".rst", ".log", ".sql", ".go", ".rs", ".java", ".cs", ".cpp",
+    ".c", ".h", ".rb", ".php", ".swift", ".kt", ".r", ".m",
+}
+_MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB hard cap
+
+
+def _extract_text(data: bytes, filename: str) -> str | None:
+    """Extract plain text from file bytes. Returns None if unsupported/empty."""
+    ext = Path(filename).suffix.lower()
+
+    if ext == ".pdf":
+        try:
+            import io
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(data))
+            pages = [p.extract_text() or "" for p in reader.pages]
+            text = "\n\n".join(p.strip() for p in pages if p.strip())
+            return text or None
+        except Exception:
+            return None
+
+    # Plain text / code
+    if ext in _TEXT_EXTENSIONS or ext == "":
+        try:
+            return data.decode("utf-8", errors="replace").strip() or None
+        except Exception:
+            return None
+
+    return None
+
+
+async def _handle_file_message(
+    api: TelegramAPI,
+    message: dict[str, Any],
+    file_id: str,
+    filename: str,
+    caption: str,
+) -> None:
+    """Download a file from Telegram, extract text, learn it into the active project."""
+    chat_id = (message.get("chat") or {}).get("id")
+    user_id = (message.get("from") or {}).get("id")
+
+    if user_id not in config.TELEGRAM_ALLOWED_IDS:
+        return
+
+    active = projects.get_active_project()
+    if not active:
+        await api.send_message(
+            chat_id,
+            "⚠️ אין פרויקט פעיל. הגדר אחד קודם עם /project <שם>.",
+        )
+        return
+
+    await api.send_chat_action(chat_id, "upload_document")
+
+    url = await api.get_file_url(file_id)
+    if not url:
+        await api.send_message(chat_id, "⚠️ לא הצלחתי להוריד את הקובץ מ-Telegram.")
+        return
+
+    data = await api.download_bytes(url)
+    if not data:
+        await api.send_message(chat_id, "⚠️ הורדת הקובץ נכשלה.")
+        return
+
+    if len(data) > _MAX_FILE_BYTES:
+        await api.send_message(chat_id, f"⚠️ הקובץ גדול מדי ({len(data)//1024//1024} MB). מגבלה: 10 MB.")
+        return
+
+    text = _extract_text(data, filename)
+    if not text:
+        await api.send_message(
+            chat_id,
+            f"⚠️ לא הצלחתי לחלץ טקסט מ-`{filename}`.\n"
+            "קבצים נתמכים: PDF, TXT, MD, קוד (py/js/ts/...), CSV, JSON וכו'.",
+        )
+        return
+
+    # חלק לחתיכות של ~800 תווים עם חפיפה של 100 תווים
+    chunk_size, overlap = 800, 100
+    chunks: list[str] = []
+    i = 0
+    while i < len(text):
+        chunks.append(text[i : i + chunk_size])
+        i += chunk_size - overlap
+
+    store = projects.get_project_store()
+    prefix = f"[קובץ: {filename}]" + (f" — {caption}" if caption else "")
+    saved = 0
+    for chunk in chunks:
+        try:
+            await store.add_knowledge(active, f"{prefix}\n{chunk}")
+            saved += 1
+        except Exception:
+            pass
+
+    await api.send_message(
+        chat_id,
+        f"📄 *{filename}* נוסף לפרויקט *{active}*\n"
+        f"{saved} קטעים נשמרו ({len(text):,} תווים)\n"
+        f"סה\"כ בפרויקט: {store.count(active)} פריטים.",
+    )
+
+
 async def _handle_message(api: TelegramAPI, message: dict[str, Any]) -> None:
     """Authorize, route to a command or the agent, and never raise."""
     chat = message.get("chat") or {}
@@ -620,6 +748,16 @@ async def _handle_message(api: TelegramAPI, message: dict[str, Any]) -> None:
     user = message.get("from") or {}
     user_id = user.get("id")
     text = (message.get("text") or "").strip()
+    caption = (message.get("caption") or "").strip()
+
+    # --- File uploads (document / photo) ------------------------------------
+    doc = message.get("document")
+    if doc and chat_id is not None:
+        file_id = doc.get("file_id", "")
+        filename = doc.get("file_name") or file_id
+        await _handle_file_message(api, message, file_id, filename, caption)
+        return
+
     if chat_id is None or not text:
         return
 

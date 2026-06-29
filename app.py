@@ -221,7 +221,11 @@ async def _starters() -> "list[cl.Starter]":
             message="/agent ",
         ),
         cl.Starter(
-            label="🔭 מחקר מעמיק",
+            label="🔬 מחקר עמוק (Sub-agents)",
+            message="/deep ",
+        ),
+        cl.Starter(
+            label="🔭 מחקר איטרטיבי",
             message="/research ",
         ),
     ]
@@ -937,6 +941,7 @@ async def _handle_agent_command(text: str) -> bool:
 
 
 _RESEARCH_PREFIXES = ("/research", "/deepresearch")
+_DEEP_PREFIXES = ("/deep",)
 
 
 async def _handle_research_command(text: str) -> bool:
@@ -1021,6 +1026,72 @@ async def _handle_research_command(text: str) -> bool:
     finally:
         cl.user_session.set("run_task", None)
         await research_client.aclose()
+    return True
+
+
+async def _handle_deep_command(text: str) -> bool:
+    """Parallel multi-angle deep research: runs 5 angles concurrently, synthesizes,
+    saves to active project, names thread with 🔬 prefix. Returns True if handled.
+
+    Usage: /deep <question>
+    """
+    lowered = text.lower()
+    if not any(lowered == p or lowered.startswith(p + " ") for p in _DEEP_PREFIXES):
+        return False
+
+    question = text.split(" ", 1)[1].strip() if " " in text else ""
+    if not question:
+        await cl.Message(
+            content=(
+                "Usage: `/deep <שאלה>` — מחקר מקבילי מ-5 מקורות + סינתזה + שמירה לפרויקט.\n"
+                "לדוגמה: `/deep מצב שוק ה-AI Agents ב-2026`"
+            )
+        ).send()
+        return True
+
+    session_client: OllamaClient | None = cl.user_session.get("client")
+    client = session_client or OllamaClient(model=config.SUPERVISOR_MODEL)
+    active_project = cl.user_session.get("active_project") or ""
+
+    # Rename thread with 🔬 prefix so sidebar JS can group it
+    thread_id = cl.context.session.thread_id
+    short_q = question[:60]
+    try:
+        import chainlit as _cl_inner
+        await _cl_inner.Thread.update(thread_id, name=f"🔬 {short_q}", tags=["research"])
+    except Exception:
+        pass  # thread rename is best-effort
+
+    # Progress message
+    angles_label = "📚 אקדמי · 🏢 תעשייה · 💻 GitHub · 📰 חדשות · 📖 רקע"
+    intro = await cl.Message(
+        content=(
+            f"🔬 **מחקר עמוק:** {question}\n\n"
+            f"_מריץ {5} sub-agents במקביל: {angles_label}_"
+        )
+    ).send()
+
+    from orchestrator.deep_research import run_deep_research
+
+    try:
+        result = await run_deep_research(question, client, project_name=active_project)
+    except Exception as exc:
+        logging.getLogger("zero_agent.ui").exception("deep research failed: %s", exc)
+        await cl.Message(content=f"⚠️ מחקר נכשל: {exc}").send()
+        return True
+
+    # Build final report message
+    save_note = (
+        f"\n\n💾 _נשמר לפרויקט: **{active_project}**_"
+        if result.get("saved") else ""
+    )
+    elapsed = result.get("elapsed", 0)
+
+    report_md = (
+        f"{result['report']}\n\n"
+        f"---\n_⏱️ {elapsed}s · 5 sub-agents במקביל{save_note}_"
+    )
+    await cl.Message(content=report_md).send()
     return True
 
 
@@ -1284,6 +1355,10 @@ async def _handle_user_message(message: cl.Message, from_voice: bool = False) ->
 
     # Iterative deep research (search → assess → search more → calibrated synthesis).
     if await _handle_research_command(message.content.strip()):
+        return
+
+    # Parallel multi-angle deep research: 5 sub-agents + synthesis + project save.
+    if await _handle_deep_command(message.content.strip()):
         return
 
     # Project slash-commands are handled here and never reach the model.

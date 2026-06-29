@@ -7,6 +7,34 @@ this file captures the concrete edits between/around those phases.
 
 ---
 
+### 2026-06-30 — Phase 6: Sub-agents + Research Memory + Sidebar Folders
+
+**Why:** Zero לא יכל לבצע מחקר עמוק במקביל — הכל היה סדרתי. הוספנו מנוע
+`/deep` שמריץ 5 sub-agents בו-זמנית (אקדמי, תעשייה, GitHub, חדשות, ויקיפדיה),
+מסנתז, ושומר אוטומטית לפרויקט הפעיל. בנוסף, הסרגל הצד מארגן שיחות לתיקיות
+לפי prefix (🔬 AI Research / 🤖 Sub-agents / 💬 שיחות).
+
+**מה נוסף:**
+
+- **`orchestrator/deep_research.py`** (חדש) — מנוע מחקר מקבילי: `run_deep_research()`
+  מריץ 5 angles במקביל דרך `asyncio.gather`, מסנתז עם prompt מובנה בעברית,
+  שומר ל-ChromaDB אם פרויקט פעיל.
+
+- **`public/zero-ui.js`** (חדש, מחליף את `copy-button.js`) — שני שיפורים:
+  (1) כפתור "📋 העתק" לכל הודעה (כמו קודם),
+  (2) Sidebar Folders: `MutationObserver` שמקבץ threads לפי emoji prefix —
+  🔬 → AI Research, 🤖 → Sub-agents, שאר → שיחות. תיקיות מתקפלות.
+
+- **`app.py`** — פקודת `/deep <שאלה>`: מריצה את מנוע המחקר, מוסיפה thread tag
+  `research` ו-prefix 🔬 לשם, מציגה דוח מסודר עם elapsed time ו-project note.
+  נוסף Starter "🔬 מחקר עמוק (Sub-agents)".
+
+- **`.chainlit/config.toml`** — `custom_js` מצביע ל-`/public/zero-ui.js`.
+
+**Files:** `orchestrator/deep_research.py` · `public/zero-ui.js` · `app.py` · `.chainlit/config.toml`
+
+---
+
 ### 2026-06-29 — UI upgrade · update_scheduled_task tool · worker model fix
 
 **Why:** (1) Chainlit welcome message was hiding starter buttons — removed it.

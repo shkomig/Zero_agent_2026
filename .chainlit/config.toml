@@ -132,7 +132,7 @@ custom_css = "/public/custom.css?v=3"
 # Specify a JavaScript file that can be used to customize the user interface.
 # The JavaScript file can be served from the public directory.
 # Zero Agent: adds a per-message "נ“‹ ׳”׳¢׳×׳§" (copy) button via the Clipboard API.
-custom_js = "/public/copy-button.js"
+custom_js = "/public/zero-ui.js"
 
 # The style of alert boxes. Can be "classic" or "modern".
 alert_style = "classic"

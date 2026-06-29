@@ -19,7 +19,30 @@ import os
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import Any
+
+
+def _load_dotenv() -> None:
+    """Load zero-agent/.env into the environment before any config import.
+
+    Same tiny hand-rolled parser used by telegram_bot.py — no python-dotenv
+    dependency. Existing real environment variables always win (setdefault).
+    Must run before `import orchestrator.config` (which reads env vars at
+    import time) so tokens/secrets in .env are visible to all modules.
+    """
+    env_path = Path(__file__).with_name(".env")
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+
+
+_load_dotenv()  # must be first — config reads env vars at import time
 
 # Chainlit requires an auth secret (to sign local session cookies) before it is
 # imported. For a single-user local app a stable default is fine; override with
@@ -44,7 +67,13 @@ from chainlit.input_widget import Select, Switch
 
 from orchestrator import auto_memory
 from orchestrator import config
+from orchestrator import idle_hygiene
 from orchestrator import lessons
+from orchestrator import memory_hygiene
+from orchestrator import notify
+from orchestrator import self_improve
+from orchestrator import scheduler as task_scheduler
+from orchestrator import session_context
 from orchestrator import stt
 from orchestrator import summarizer
 from orchestrator import tts
@@ -57,9 +86,18 @@ from orchestrator.models.ollama_client import OllamaClient
 from orchestrator.supervisor import Supervisor
 from orchestrator.research_agent import ResearchAgent
 
-# Side-effect import: registers read_file / execute_terminal_command.
+# Side-effect imports: register all tools.
 from orchestrator.tools import registry
 from orchestrator.tools.media_tools import extract_media_paths
+from orchestrator.tools import session_tools  # noqa: F401 — registers update_task_state / log_task_action / get_task_status
+from orchestrator.tools import mcp_tools              # noqa: F401 — registers mcp_connect / mcp_list / mcp_call / mcp_disconnect
+from orchestrator.tools import cookbook_tools          # noqa: F401 — registers cookbook_list / cookbook_install
+from orchestrator.tools import github_tools            # noqa: F401 — registers get_github_trending / get_github_repo_info
+from orchestrator.tools import telegram_channel_tools  # noqa: F401 — registers read_telegram_channels / list_telegram_channels
+from orchestrator.tools import tws_tools               # noqa: F401 — registers launch_tws / check_tws_status / stop_tws
+from orchestrator import telegram_notify as _tg_notify_module  # noqa: F401 — registers send_telegram_report tool
+from orchestrator import cookbook as _cookbook
+from orchestrator import mcp_client as _mcp_client
 
 # Structured logging + trace IDs (Phase 1 observability).
 obs.configure_logging()
@@ -144,6 +182,13 @@ CHAT_COMMANDS = [
         "id": "Remember",
         "icon": "brain",
         "description": "Save your text to long-term memory",
+        "button": True,
+        "persistent": False,
+    },
+    {
+        "id": "Schedule",
+        "icon": "clock",
+        "description": "Schedule a task to run at a specific time or on a recurring schedule",
         "button": True,
         "persistent": False,
     },
@@ -234,6 +279,16 @@ def _make_approver():
             args_str = str(args)
         if len(args_str) > 800:
             args_str = args_str[:800] + "\n… (truncated)"
+        # Heads-up toast so the user notices the gate even if the tab isn't focused.
+        if config.HITL_NOTIFY:
+            notify.notify(
+                "Zero Agent — approval needed",
+                f"Run `{name}`? Open the chat to Approve or Deny.",
+            )
+        # timeout=0 → wait FOREVER. The user chose no auto-deny: a missed prompt
+        # should pause the run indefinitely, not silently kill it. Chainlit needs
+        # a positive int, so 0 maps to a very large value (~1 week ≈ forever).
+        ask_timeout = config.HITL_TIMEOUT if config.HITL_TIMEOUT > 0 else 7 * 24 * 3600
         res = await cl.AskActionMessage(
             content=f"⚠️ The agent wants to run **`{name}`**:\n```\n{args_str}\n```\nApprove this action?",
             actions=[
@@ -242,10 +297,10 @@ def _make_approver():
                           label="✅✅ Approve all (this session)"),
                 cl.Action(name="deny", payload={"decision": "deny"}, label="🚫 Deny"),
             ],
-            timeout=120,
+            timeout=ask_timeout,
         ).send()
         if not res:
-            return False  # timeout / dismissed → deny
+            return False  # explicitly dismissed → deny (timeout is effectively off)
         decision = res.get("payload", {}).get("decision") or res.get("name")
         if decision == "approve_all":
             cl.user_session.set("hitl_approve_all", True)
@@ -354,6 +409,53 @@ async def start() -> None:
         return
     _client, model = result
 
+    # Start the idle-hygiene watcher once: when the machine sits unused, it runs the
+    # memory consolidation pass (dedup + decay + contradiction) automatically. No-op
+    # if disabled/unsupported, and it never spawns a second watcher.
+    idle_hygiene.start_idle_watcher(get_store(), client=_client)
+
+    # Auto-connect MCP servers configured in .env (ZERO_AGENT_MCP_SERVERS).
+    # Runs only once per process — subsequent on_chat_start calls skip already-
+    # connected servers. Failures are logged; they never crash the UI.
+    if config.MCP_ENABLED and config.MCP_SERVERS and not _mcp_client.list_connections():
+        asyncio.create_task(_mcp_client.autoconnect_from_config())
+
+    # Start the task scheduler (idempotent — safe to call on every new session).
+    # Wire up the runner so scheduled tasks go through the full agent pipeline
+    # AND deliver the result ONLY to Telegram (UI is usually closed at fire time).
+    if not task_scheduler.get_scheduler().running:
+        from orchestrator import telegram_notify as _tg_notify
+        async def _scheduled_task_runner(prompt: str, model: str = "") -> None:
+            """Run a scheduled prompt through Zero; send result to Telegram.
+
+            Uses the task-specific model if provided, otherwise falls back to
+            the active session model or DEFAULT_MODEL. Always sends to Telegram
+            so reports arrive even when the Chainlit UI tab is closed.
+            """
+            try:
+                # Pick model: task-level override > active session > default
+                chosen_model = (
+                    model.strip()
+                    or (cl.user_session.get("model") if cl.user_session else None)
+                    or config.DEFAULT_MODEL
+                )
+                task_client = OllamaClient(model=chosen_model)
+                agent = BaseAgent(task_client, registry)
+                history: list[dict[str, Any]] = []
+                result = await agent.run(prompt, history)
+                # Send to Telegram — primary delivery channel for scheduled tasks
+                header = f"⏰ *Scheduled*  `{chosen_model}`\n_{prompt[:100]}_\n\n"
+                await _tg_notify.send_to_owner(header + result)
+                # Also echo to UI if a session happens to be open
+                try:
+                    await cl.Message(content=f"⏰ **Scheduled task:**\n\n{result}").send()
+                except Exception:
+                    pass
+            except Exception:
+                logger.exception("scheduled task runner failed")
+        task_scheduler.set_task_runner(_scheduled_task_runner)
+        task_scheduler.start()
+
     # Build the project dropdown: "(no project)" + every existing project. The
     # active project (last used) is pre-selected.
     project_values = ["(no project)"] + projects.get_project_store().list_projects()
@@ -412,6 +514,13 @@ async def start() -> None:
             f"\n\n_(`{DEFAULT_MODEL}` not installed — using `{model}`. "
             f"Run `ollama pull {DEFAULT_MODEL}` for the full model.)_"
         )
+    # Cross-session task context: load what Zero was last working on and inject
+    # it into the history so the first turn is already oriented.
+    if config.SESSION_CONTEXT_ENABLED:
+        history: list[dict[str, Any]] = cl.user_session.get("history")
+        block = session_context.build_session_block(history_has_summary=False)
+        session_context.inject_session_message(history, block)
+
     proj_note = f" · project `{active}`" if active else ""
     n_tools = len(registry.names())
     await cl.Message(
@@ -423,8 +532,15 @@ async def start() -> None:
             "- `/agent <goal>` — autonomous multi-step build (plan → do → verify)\n"
             "- `/research <question>` — deep, source-tiered, **calibrated** research\n"
             "- `/projects` · `/project <name>` · `/learn <text>` — project knowledge bases\n"
-            "- `/always <rule>` · `/lessons` — what I remember & learned\n\n"
-            "_Composer: 🔭 Research · 🎨 Image · 🎥 Video · 🧠 Remember · 🎤 voice · "
+            "- `/always <rule>` · `/lessons` — what I remember & learned\n"
+            "- `/status` · `/cleartask` — show / clear active task context\n"
+            "- `/check_job [job_id]` — check a background video/render job\n"
+            "- `/scheduled` · `/cancel <id>` — view / cancel scheduled tasks\n"
+            "- `/hygiene` — tidy my memory (dedup; `/hygiene dry` to preview)\n"
+            "- `/improve` — self-improvement: analyse failures → add rules (`/improve dry` to preview · `/improve stats`)\n"
+            "- `/cookbook [category]` — model catalog: what to run & why (filter: coding/vision/fast/embedding)\n"
+            "- `/mcp connect <name> <cmd> [args]` · `/mcp list` — wire up MCP servers, see their tools\n\n"
+            "_Composer: 🔭 Research · 🎨 Image · 🎥 Video · ⏰ Schedule · 🧠 Remember · 🎤 voice · "
             "models/project from ⚙️ settings._"
         )
     ).send()
@@ -595,6 +711,14 @@ async def resume(thread: "dict[str, Any]") -> None:
         resolved = await client.resolve_model(restored_model)
         if resolved:
             client.model = resolved
+
+    # Cross-session task context: inject session state + journal into the resumed
+    # history. Skip the persisted summary if the thread already contains one
+    # (rebuilt from the stored steps above), to avoid stale duplication.
+    if config.SESSION_CONTEXT_ENABLED:
+        has_summary = session_context._history_has_rolling_summary(history)
+        block = session_context.build_session_block(history_has_summary=has_summary)
+        session_context.inject_session_message(history, block)
 
     logging.getLogger("zero_agent.ui").info(
         "resumed thread: %d restored messages, model=%s", len(history), client.model
@@ -920,7 +1044,17 @@ async def _handle_research_command(text: str) -> bool:
 
 @cl.on_message
 async def on_message(message: cl.Message) -> None:
-    await _handle_user_message(message)
+    # Guard against duplicate sends: if a turn is already in flight, drop the
+    # extra send silently. This prevents the double-Ollama-request that causes
+    # template-parser errors and context corruption when the user re-sends a
+    # message because the UI appeared stuck.
+    if cl.user_session.get("_processing"):
+        return
+    cl.user_session.set("_processing", True)
+    try:
+        await _handle_user_message(message)
+    finally:
+        cl.user_session.set("_processing", False)
 
 
 async def _handle_user_message(message: cl.Message, from_voice: bool = False) -> None:
@@ -963,6 +1097,187 @@ async def _handle_user_message(message: cl.Message, from_voice: bool = False) ->
     # Show what the agent has learned from its mistakes (phase 3: transparency).
     if message.content.strip().lower() == "/lessons":
         await cl.Message(content=lessons.list_lessons(get_store())).send()
+        return
+
+    # Task status: show what Zero is currently working on across sessions.
+    low = message.content.strip().lower()
+    if low in ("/status", "/task"):
+        state = session_context.load_session_state()
+        journal = session_context._load_journal_tail(10)
+        if state.get("active_task"):
+            lines = [f"**Active task:** {state['active_task']}"]
+            if state.get("current_step"):
+                lines.append(f"**Current step:** {state['current_step']}")
+            if state.get("next_step"):
+                lines.append(f"**Next step:** {state['next_step']}")
+            if state.get("notes"):
+                lines.append(f"**Notes:** {state['notes']}")
+            if state.get("updated_at"):
+                lines.append(f"_Last updated: {state['updated_at']}_")
+        else:
+            lines = ["_No active task recorded._"]
+        if journal:
+            lines.append("\n**Recent actions:**")
+            lines.extend(f"- {e}" for e in journal)
+        await cl.Message(content="\n".join(lines)).send()
+        return
+
+    # Clear session task context (when starting a completely new project).
+    if low == "/cleartask":
+        session_context.clear_session_state()
+        await cl.Message(content="✅ Session task context cleared.").send()
+        return
+
+    # Scheduled tasks: /scheduled lists all; /cancel <id> removes one.
+    if low in ("/scheduled", "/tasks", "/schedule"):
+        tasks = task_scheduler.list_tasks()
+        if not tasks:
+            await cl.Message(content="⏰ No scheduled tasks. Use the ⏰ Schedule button or `schedule_task()`.").send()
+        else:
+            lines = ["⏰ **Scheduled Tasks**\n"]
+            for t in tasks:
+                sched = t.get("cron") or t.get("run_at", "?")
+                nxt = t.get("next_run", "?")
+                lines.append(
+                    f"• `{t['id']}` — **{t.get('label','(no label)')}**\n"
+                    f"  Schedule: `{sched}` | Next: {nxt}\n"
+                    f"  Prompt: _{t.get('prompt','')[:70]}_"
+                )
+            await cl.Message(content="\n\n".join(lines)).send()
+        return
+
+    if low.startswith("/cancel "):
+        task_id = message.content.strip().split(None, 1)[1].strip()
+        removed = task_scheduler.cancel_task(task_id)
+        if removed:
+            await cl.Message(content=f"✅ Task `{task_id}` cancelled.").send()
+        else:
+            await cl.Message(content=f"Task `{task_id}` not found. Check `/scheduled` for valid ids.").send()
+        return
+
+    # Check a background ComfyUI render job: /check_job <job_id>
+    if low.startswith("/check_job") or low.startswith("/checkjob"):
+        from orchestrator.tools.media_tools import _JOBS
+        parts = message.content.strip().split(None, 1)
+        job_id = parts[1].strip() if len(parts) > 1 else ""
+        if not job_id:
+            if _JOBS:
+                lines = []
+                for jid, j in _JOBS.items():
+                    elapsed = int(time.time() - j.created)
+                    lines.append(f"• `{jid}` — **{j.status}** ({elapsed}s) — {j.prompt_text[:60]}")
+                await cl.Message(content="**Active render jobs:**\n" + "\n".join(lines)).send()
+            else:
+                await cl.Message(content="No render jobs in this session. Use `/check_job <job_id>`.").send()
+            return
+        job = _JOBS.get(job_id)
+        if job is None:
+            known = ", ".join(f"`{k}`" for k in _JOBS) or "none"
+            await cl.Message(content=f"No job `{job_id}` found. Known: {known}").send()
+            return
+        elapsed = int(time.time() - job.created)
+        if job.status in {"queued", "running"}:
+            await cl.Message(content=f"🎬 Job `{job.id}` is **{job.status}** — {elapsed}s elapsed. Check again soon.").send()
+        elif job.status == "error":
+            await cl.Message(content=f"❌ Job `{job.id}` **failed** after {elapsed}s:\n{job.error or job.result}").send()
+        else:
+            await cl.Message(content=f"✅ Job `{job.id}` **done** in {elapsed}s.\n{job.result}").send()
+        return
+
+    # Memory hygiene: dedup near-identical memories (+ decay stale auto-facts if a
+    # TTL is set). `/hygiene` runs it; `/hygiene dry` previews without deleting.
+    if low.startswith("/hygiene") or low.startswith("/cleanmemory"):
+        dry = "dry" in low or "preview" in low
+        # A judge enables the LLM contradiction phase (older of a conflicting pair is
+        # dropped); on a dry-run it still computes what WOULD go, deleting nothing.
+        judge = memory_hygiene.make_contradiction_judge()
+        r = await asyncio.to_thread(
+            memory_hygiene.consolidate, get_store(), dry_run=dry, judge=judge
+        )
+        verb = "Would remove" if dry else "Removed"
+        await cl.Message(
+            content=(f"🧹 Memory hygiene{' (dry-run)' if dry else ''} — examined "
+                     f"{r['examined']}. {verb} {r['removed_duplicates']} duplicate(s) + "
+                     f"{r['removed_expired']} stale + {r['removed_contradictions']} "
+                     f"contradiction(s). {r['remaining']} kept.")
+        ).send()
+        return
+
+    # Self-improvement loop: analyses task history for failure patterns and converts
+    # them into standing RULES (same channel as /always). Works alongside /hygiene.
+    if low.startswith("/improve"):
+        arg = low[len("/improve"):].strip()
+        dry = arg in ("dry", "preview", "dry-run")
+        stats_only = arg in ("stats", "status", "stat")
+        _client_now = cl.user_session.get("client")
+        if stats_only:
+            text = self_improve.get_failure_stats()
+            await cl.Message(content=text).send()
+            return
+        async with cl.Step(name="🧠 Self-improvement cycle", show_input=False):
+            result = await self_improve.run_improvement_cycle(
+                get_store(),
+                _client_now,
+                dry_run=dry,
+                force=True,
+            )
+        await cl.Message(content=result).send()
+        return
+
+    # Model Cookbook: curated catalog with VRAM requirements, capabilities, and
+    # one-click install. `/cookbook` → all models; `/cookbook coding` → by category.
+    if low.startswith("/cookbook"):
+        arg = low[len("/cookbook"):].strip()
+        from orchestrator.tools.cookbook_tools import cookbook_list
+        result = cookbook_list(category=arg) if arg else cookbook_list()
+        await cl.Message(content=result).send()
+        return
+
+    # MCP management shortcuts: connect servers, list tools, disconnect.
+    # Full tool calls via the agent; these are quick UI shortcuts.
+    if low.startswith("/mcp"):
+        arg = message.content.strip()[4:].strip()  # preserve case for URLs/paths
+        parts = arg.split()
+        sub = parts[0].lower() if parts else "list"
+        if sub == "list" or not sub:
+            conns = _mcp_client.list_connections()
+            if not conns:
+                await cl.Message(
+                    content=(
+                        "No MCP servers connected.\n\n"
+                        "Connect one: `/mcp connect <name> <command> [args…]`\n"
+                        "Examples:\n"
+                        "  `/mcp connect fs uvx mcp-server-filesystem C:\\projects`\n"
+                        "  `/mcp connect github uvx mcp-server-github`\n\n"
+                        "Or set `ZERO_AGENT_MCP_SERVERS` in `.env` for auto-connect at startup."
+                    )
+                ).send()
+            else:
+                from orchestrator.tools.mcp_tools import mcp_list
+                text = await mcp_list()
+                await cl.Message(content=text).send()
+        elif sub == "connect" and len(parts) >= 3:
+            name = parts[1]
+            cmd = parts[2]
+            args_str = " ".join(parts[3:])
+            async with cl.Step(name=f"MCP connect: {name}", show_input=False):
+                from orchestrator import mcp_client as _mc
+                r = await _mc.connect_stdio(name=name, command=cmd, args=parts[3:])
+            await cl.Message(content=r).send()
+        elif sub == "disconnect" and len(parts) >= 2:
+            r = await _mcp_client.disconnect(parts[1])
+            await cl.Message(content=r).send()
+        else:
+            await cl.Message(
+                content=(
+                    "MCP commands:\n"
+                    "  `/mcp list` — show connected servers and their tools\n"
+                    "  `/mcp connect <name> <cmd> [args…]` — connect stdio server\n"
+                    "  `/mcp disconnect <name>` — disconnect a server\n\n"
+                    "For SSE servers or advanced config, ask Zero: "
+                    '`connect to MCP server at http://localhost:8000/sse`'
+                )
+            ).send()
         return
 
     # HITL control: `/hitl off` = approve everything this session (no prompts);
@@ -1023,6 +1338,31 @@ async def _handle_user_message(message: cl.Message, from_voice: bool = False) ->
             "the job_id and tell the user to check back (check_job at most twice).\n\n"
             + message.content
         )
+    elif command == "Schedule":
+        raw = message.content.strip()
+        if not raw:
+            await cl.Message(
+                content=(
+                    "⏰ **Schedule a task** — type your request in this format:\n\n"
+                    "`<what to do> | <when>`\n\n"
+                    "**Examples:**\n"
+                    "- `חדשות מונדיאל של היום | כל בוקר 09:00`\n"
+                    "- `הרץ pipeline פרק 42 | היום 22:00`\n"
+                    "- `סיכום שוק ההון | כל שני 08:30`\n"
+                    "- `בדוק מזג אוויר בתל אביב | כל 30 דקות`"
+                )
+            ).send()
+            return
+        # Split on "|" — left = prompt, right = schedule
+        if "|" in raw:
+            task_prompt, _, schedule_expr = raw.partition("|")
+            prompt = (
+                f"Schedule this task using the schedule_task tool:\n"
+                f"task_prompt: {task_prompt.strip()}\n"
+                f"schedule: {schedule_expr.strip()}"
+            )
+        else:
+            prompt = f"Schedule this task using the schedule_task tool. Parse both the task and schedule from: {raw}"
 
     history: list[dict[str, Any]] = cl.user_session.get("history")
 

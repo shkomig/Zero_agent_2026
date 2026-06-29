@@ -73,6 +73,7 @@ from orchestrator.models.ollama_client import OllamaClient  # noqa: E402
 # Side-effect import: registers all tools against the shared registry.
 from orchestrator.tools import registry  # noqa: E402
 from orchestrator.tools.media_tools import extract_media_paths  # noqa: E402
+from orchestrator.tools import tws_tools  # noqa: F401 — registers launch_tws / check_tws_status / stop_tws
 
 logger = logging.getLogger("zero_agent.telegram")
 

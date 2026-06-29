@@ -12,6 +12,782 @@ this file captures the concrete edits between/around those phases.
 
 ---
 
+## 2026-06-29 (update 3)
+
+### TWS launch + login nudge at 16:00
+
+Zero launches Trader Workstation every weekday at 16:00 (Israel time) and sends
+a Telegram notification so the user finishes login (types password + Enter).
+
+**Why not full auto-login:** we tried hard (IBC, SendKeys, pyautogui, clipboard
+paste) — all unreliable. TWS is a Java Swing app (`SunAwtFrame`, process
+`tws.exe` not `java.exe`); synthetic keyboard input is silently dropped/reordered
+(`pwvtgv369` → `369`), paste doesn't land, and 125% DPI scaling threw off pixel
+clicks. IBC needs the *offline* TWS build; the user has the auto-updating one.
+The robust 95% solution: open TWS, focus the Login window, nudge via Telegram.
+TWS pre-fills the last username, so it's just a password + Enter. No 2FA on the
+trusted device.
+
+Tools:
+- `launch_tws(notify_telegram, wait_seconds)` — opens tws.exe, waits for the
+  Login dialog, brings it to the foreground, sends a Telegram "ready to log in".
+- `check_tws_status()` — running / at-login-screen / logged-in.
+- `stop_tws()` — taskkill tws.exe.
+
+Scheduled task (`tws_login_daily`): cron `0 16 * * 1-5`, model `qwen3.6-uncensored`.
+
+**Files:**
+
+- `orchestrator/tools/tws_tools.py` *(new)* — launch_tws, check_tws_status, stop_tws
+- `data/scheduler/tasks.json` — added tws_login_daily
+- `.env` — `ZERO_AGENT_TWS_EXE`
+- `app.py` — imports tws_tools
+
+---
+
+## 2026-06-29 (update 2)
+
+### Telegram news digest — richer output
+
+Improved the daily 12:00 news digest quality significantly:
+
+- **`format_messages_report()`** rewritten: channels sorted by subscriber count
+  (most followed = most authoritative first), up to 4 items per channel, content
+  expanded from 300 → 500 chars with sentence-boundary truncation, timestamp +
+  views + link shown per item, timestamp header added.
+- **`read_channel_messages()`** now captures `subscribers`, `channel_title`,
+  `ch_username` per message (enables subscriber-sorted output).
+- **`tasks.json` `telegram_news_daily` prompt** upgraded: 5 categories
+  (ביטחון/כלכלה/טכנולוגיה/בינלאומי/כללי), 2-3 items per category, 3-4 sentence
+  summary per item, "שורה תחתונה" trend summary; `hours=8`, `limit=30`.
+- **`.env`** `ZERO_AGENT_TG_CHANNELS` expanded to 16 channels including
+  `@amitsegal` (Amit Segal, Channel 12).
+
+**Files:**
+
+- `orchestrator/telegram_reader.py` — format_messages_report, read_channel_messages
+- `data/scheduler/tasks.json` — telegram_news_daily prompt
+- `.env` — ZERO_AGENT_TG_CHANNELS
+
+---
+
+## 2026-06-29
+
+### MCP (Model Context Protocol) client support
+
+Zero can now connect to **any MCP server** — local stdio subprocess or SSE/HTTP
+endpoint — and call its tools natively. This opens the full MCP ecosystem
+(GitHub, filesystem, databases, Puppeteer, Brave search, SQLite, …) without
+touching the core architecture.
+
+**Design:** a persistent async connection per server (runs as background task,
+holds the transport open); tools are called on the live session. Three tools
+plus two UI shortcuts:
+
+- `mcp_connect(name, type, command, args, url)` — wire up a server
+- `mcp_list(server?)` — see all tools; detailed schema for one server
+- `mcp_call(server, tool, arguments)` — invoke any MCP tool
+- `mcp_disconnect(server)` — tear down a connection
+- `/mcp list` / `/mcp connect <name> <cmd> [args]` — quick UI shortcuts
+
+Auto-connect: set `ZERO_AGENT_MCP_SERVERS` in `.env` (JSON array of server
+defs) and Zero wires them up at session start. Graceful degradation: if `mcp`
+is not installed, tools return a clear install message (never crashes).
+
+**Files:**
+
+- `orchestrator/mcp_client.py` *(new)* — MCPManager, connect_stdio, connect_sse, call_tool
+- `orchestrator/tools/mcp_tools.py` *(new)* — mcp_connect, mcp_list, mcp_call, mcp_disconnect
+- `orchestrator/config.py` — added MCP_ENABLED + MCP_SERVERS (JSON array)
+- `app.py` — imports mcp_tools, auto-connect task, `/mcp` command handler, help updated
+
+### Model Cookbook
+
+A curated, hardware-aware model catalog: what models exist, what they're good
+for, and how much VRAM they need. Browse and install from the UI or via the
+agent — no more hunting Ollama Hub.
+
+**20 entries** across 6 categories: general, coding, fast, uncensored, vision,
+embedding. Every entry has: Ollama tag, VRAM requirement, download size,
+capabilities, recommended use, and notes from real usage.
+
+- `/cookbook` — full catalog in the chat
+- `/cookbook coding` / `/cookbook vision` / etc. — filter by category
+- `cookbook_list(category, max_vram_gb, model_id)` — agent tool (also filterable)
+- `cookbook_install(model_id)` — `ollama pull` with progress, agent tool
+
+**Files:**
+
+- `orchestrator/cookbook.py` *(new)* — CATALOG (20 entries), format_table, recommendation_for_vram
+- `orchestrator/tools/cookbook_tools.py` *(new)* — cookbook_list, cookbook_install
+- `app.py` — imports cookbook_tools, `/cookbook` command handler, help updated
+
+---
+
+## 2026-06-29 (2)
+
+### Scheduled daily reports → Telegram
+
+Three daily intelligence reports delivered automatically to Telegram, even
+when the Chainlit UI is closed:
+
+| Time  | Report |
+|-------|--------|
+| 10:00 | AI stocks — deep research + buy/hold/sell recommendations |
+| 12:00 | Telegram channels — breaking news digest from serious channels |
+| 14:00 | GitHub Trending — top AI/dev repos of the day |
+
+**New infrastructure:**
+
+- `orchestrator/telegram_notify.py` *(new)* — sends messages to the owner
+  via the existing bot (no new deps; uses httpx). Chunks long messages to
+  respect Telegram's 4096-char limit. Used by the scheduler bridge.
+- `orchestrator/telegram_reader.py` *(new)* — Telethon MTProto client.
+  Reads channel messages using the personal account (not the bot). Requires
+  one-time auth via `setup_telegram_reader.py`.
+- `orchestrator/tools/telegram_channel_tools.py` *(new)* — registers
+  `read_telegram_channels` + `list_telegram_channels` tools. Default channel
+  list from `ZERO_AGENT_TG_CHANNELS` in `.env`.
+- `orchestrator/tools/github_tools.py` *(new)* — registers
+  `get_github_trending` (daily/weekly/monthly, AI filter, lang filter) +
+  `get_github_repo_info` (detailed per-repo info). Uses public GitHub search
+  API; set `GITHUB_TOKEN` in `.env` for higher rate limits.
+- `setup_telegram_reader.py` *(new)* — interactive one-time auth script.
+  Run once: `python setup_telegram_reader.py` → phone + code → session saved
+  to `data/telethon/zero_agent.session`.
+- `app.py` — scheduler runner now ALSO sends result to Telegram via
+  `telegram_notify.send_to_owner()` after every scheduled task fires.
+  Imports `github_tools` + `telegram_channel_tools` at startup.
+- `.env` — added `ZERO_AGENT_TG_API_ID`, `ZERO_AGENT_TG_API_HASH`,
+  `ZERO_AGENT_TG_CHANNELS`.
+- `requirements.txt` — added `telethon>=1.36` (installed: 1.44.0).
+
+**Scheduled prompts to add via Zero after restart:**
+```
+Task 1 (10:00): /research מניות AI מובילות — NVDA AMD MSFT GOOGL META ARM PLTR. 
+  חדשות היום, שינויי אנליסטים, תנועות מחיר. דוח מלא בעברית עם המלצות קניה/מכירה/החזקה ויעדי מחיר.
+
+Task 2 (12:00): read_telegram_channels וסכם את החדשות הכי חשובות מהשעות האחרונות. 
+  דוח חדשות בעברית — רק ערוצים רציניים עם עוקבים רבים.
+
+Task 3 (14:00): get_github_trending ורשום את הפרויקטים הכי מעניינים ב-AI/LLM/Agents.
+  לכל פרויקט: שם, תיאור, כמה stars צבר היום, ולמה זה מעניין. בעברית.
+```
+
+---
+
+## 2026-06-28
+
+### Added — Self-improvement loop (`orchestrator/self_improve.py`)
+
+**Why:** Zero Agent accumulated 58 task runs with 20 failures (27% of runs) and
+65 total replanning cycles — but none of this cross-session failure history was
+feeding back into the agent's behaviour. Each new session started with no
+knowledge of what had gone wrong before. The `lessons.py` per-turn layer catches
+single-turn mistakes; this closes the gap at the multi-session level.
+
+**What:**
+
+New `orchestrator/self_improve.py` — a three-stage pipeline:
+
+1. **Mine** (`_load_recent_tasks` + `_extract_failures`) — reads all
+   `data/tasks/*.json` from the last N days (default 7). Extracts every failed /
+   timed-out step plus runs with ≥ 2 replanning cycles as systemic failure signals.
+2. **Diagnose** (`_diagnose`) — feeds up to 25 failure examples to `qwopus-coder`
+   (or `ZERO_AGENT_IMPROVE_MODEL`) with a structured prompt; the model clusters
+   them into up to 5 PATTERNS and proposes one actionable RULE per pattern
+   ("Always …" / "Never …" / "When … then …"). Returns a JSON array.
+3. **Apply** (`run_improvement_cycle`) — sanitizes each rule through
+   `memory_guard.sanitize_for_memory`, dedupes against existing entries (cosine
+   ≥ 0.90 skips), and writes novel rules to ChromaDB with `tag=preference` —
+   the same channel as `/always`. They are injected into every future turn via
+   the existing `inject_preferences_message` path. No code changes, fully
+   reversible: view with `/always`, clear with `/always clear`.
+
+Rules are prefixed `[auto-improve]` so they are identifiable in the `/always`
+list.
+
+**Trigger modes:**
+
+| Command           | Behaviour                                                              |
+| ----------------- | ---------------------------------------------------------------------- |
+| `/improve`        | Full cycle, writes rules                                               |
+| `/improve dry`    | Preview patterns + rules without writing                               |
+| `/improve stats`  | Failure rate stats (runs / steps / replans / last cycle)               |
+| Idle auto-trigger | Runs after memory consolidation when machine idle >= 5 min, once/day  |
+
+**Idle integration:** `idle_hygiene.start_idle_watcher` now accepts a `client`
+argument and passes it to `self_improve.maybe_run_idle`, which runs a cycle after
+`memory_hygiene.consolidate` if enough time has elapsed.
+
+**Config flags** (all env-overridable):
+
+- `ZERO_AGENT_SELF_IMPROVE` (default `1`)
+- `ZERO_AGENT_IMPROVE_DAYS` (default `7`)
+- `ZERO_AGENT_IMPROVE_MIN_FAILURES` (default `3`)
+- `ZERO_AGENT_IMPROVE_MAX_RULES` (default `5`)
+- `ZERO_AGENT_IMPROVE_MODEL` (default `SUPERVISOR_MODEL`)
+- `ZERO_AGENT_IMPROVE_MIN_GAP` (default `86400` = once/day for auto)
+
+**Live data at merge:** 58 task runs, 20 failures, 65 replans — enough data for
+the first real cycle.
+
+**Verified:** 94/94 component checks pass (no regression).
+
+**Files:**
+
+- `orchestrator/self_improve.py` *(new)*
+- `orchestrator/idle_hygiene.py` — `_watch` + `start_idle_watcher` accept `client`
+- `orchestrator/config.py` — 6 new `SELF_IMPROVE_*` flags
+- `app.py` — import, `/improve` command, idle watcher receives client, help screen
+
+---
+
+## 2026-06-26 (3)
+
+### Added — Visual QC, img2vid injection, Studio API tools, Task Scheduler
+
+**Why:** Three features to support the Project_Mair_Full_AI animated series workflow:
+(1) 15% character inconsistency rate in LoRA image generation needed an automated
+visual QC loop; (2) Zero needed to orchestrate the full episode pipeline end-to-end
+via the Studio FastAPI; (3) users needed to schedule recurring/one-time tasks
+(chapter renders at night, news briefings every morning) with a UI button.
+
+#### Feature 1 — Visual QC + img2vid (media_tools.py)
+
+| Tool | Purpose |
+| --- | --- |
+| `_inject_image(workflow, path)` | Injects source image into `LoadImage` node for img2vid workflows |
+| `submit_img2vid_job(workflow, image, prompt)` | Background img2vid render (SVD/WAN/LTX) from a reference image |
+| `generate_verified_image(workflow, prompt, character_check, max_retries)` | Generates image + local vision QC loop (gemma3:4b); retries up to N times if character description doesn't match; fail-open if vision model is unavailable |
+
+#### Feature 2 — Studio API tools (new file: orchestrator/tools/studio_tools.py)
+
+8 tools that drive the Meir Studio FastAPI (port 3333) from Zero:
+
+- `get_studio_chapters()` / `get_studio_chapter(num)` — list chapters + per-scene status
+- `generate_studio_script(concept, music_style, episode_length, engine)` — calls Claude to write Chapter_N.json + Audio JSON
+- `run_studio_pipeline(chapter_num, scene_ids?)` — trigger FLUX+TTS+WanVideo pipeline
+- `get_studio_pipeline_status()` — poll progress
+- `regenerate_studio_scene(chapter_num, scene_id, extra_prompt)` — fix a single scene
+- `render_studio_chapter(chapter_num)` — Remotion final MP4
+- `upload_studio_to_youtube(chapter_num, privacy)` — publish
+
+#### Feature 3 — Task Scheduler (new files: orchestrator/scheduler.py + tools/scheduler_tools.py)
+
+- `AsyncIOScheduler` (APScheduler 3.x) wired into Chainlit's event loop
+- Persists tasks to `data/scheduler/tasks.json` — survives restarts
+- 3 tools: `schedule_task(prompt, schedule, label)` / `list_scheduled_tasks()` / `cancel_scheduled_task(id)`
+- Natural Hebrew/English schedule parsing: "כל בוקר 09:00" → cron `0 9 * * *`, "היום 22:00" → one-time DateTrigger
+- UI: ⏰ Schedule button in composer (same row as 🎨 Image / 🎥 Video)
+- Slash commands: `/scheduled` (list all), `/cancel <id>` (remove)
+- Banner updated; `apscheduler>=3.10` added to requirements.txt
+
+**Files touched:**
+
+- `orchestrator/tools/media_tools.py` — 3 new tools/functions
+- `orchestrator/tools/studio_tools.py` *(new)*
+- `orchestrator/tools/scheduler_tools.py` *(new)*
+- `orchestrator/scheduler.py` *(new)*
+- `orchestrator/tools/__init__.py` — registered studio_tools + scheduler_tools
+- `app.py` — scheduler startup + ⏰ button + /scheduled + /cancel + banner
+- `requirements.txt` — apscheduler>=3.10
+
+**Total tools: 52** (was 39 before this session)
+
+---
+
+## 2026-06-26 (2)
+
+### Fixed — VRAM collision during video generation
+
+**Why:** When the user asked Zero to generate a video, the system froze.
+Root cause: `qwen3:32b` occupies ~20 GB VRAM; a ComfyUI video model (SVD/WAN/LTX)
+needs another 8-16 GB. Both running simultaneously → OOM → system hang.
+Additionally, `run_comfyui_workflow` (blocking) was being used for video instead
+of `submit_comfyui_job` (background), making the agent unresponsive for minutes.
+
+**What changed:**
+
+- `free_llm_vram()` — new tool that calls Ollama `POST /api/generate` with
+  `keep_alive=0`, gracefully unloading the LLM from VRAM before a heavy render.
+  The LLM reloads automatically on the next message (~5-10 s first-token latency).
+- `submit_comfyui_job` docstring updated with explicit VRAM warning and the
+  required 3-step call sequence: `free_llm_vram → submit_comfyui_job → tell user`.
+- `run_comfyui_workflow` docstring updated with explicit WARNING not to use it
+  for video.
+- `/check_job [job_id]` slash command in the UI — lists all active render jobs
+  (no arg) or reports status/result for a specific job_id.
+- Banner updated to mention `/check_job`.
+
+**Files touched:** `orchestrator/tools/media_tools.py`, `app.py`, `CHANGELOG.md`
+
+---
+
+## 2026-06-26
+
+### Added — Cross-session task context (session_context layer)
+
+**Why:** Zero Agent lost all sense of "what was I working on" every time a new
+chat session was opened. The rolling `[[ZERO_SUMMARY]]` summarizer compressed
+long conversations within a session, but on restart it was gone — leaving the
+agent with no memory of an ongoing multi-step project (e.g. "I was in Phase 2
+of CyberLab, next is VMnet config"). The user had to re-explain context at every
+new session, which defeated the continuity goal of a personal autonomous agent.
+
+**What:**
+
+Three complementary stores, all pure file I/O (< 1 ms each, zero Ollama calls,
+zero per-turn overhead):
+
+| Store | Path | Written by |
+| --- | --- | --- |
+| `session_state.json` | `data/session/session_state.json` | `update_task_state` tool |
+| `task_journal.md` | `data/session/task_journal.md` | `log_task_action` tool |
+| `last_summary.txt` | `data/session/last_summary.txt` | summarizer (auto, after each compression) |
+
+All three are read **once** at `on_chat_start` / `on_chat_resume` and merged into
+a single `[[ZERO_SESSION]]` system message (same `[[…]]` pattern as
+`[[ZERO_PROJECT]]` and `[[ZERO_SUMMARY]]`; BaseAgent preserves all of them across
+turns). The block is skipped entirely if all stores are empty — no noise on a
+fresh install.
+
+New tools registered in the agent:
+
+- `update_task_state(task, step, next_step, notes)` — write current context
+- `log_task_action(action)` — append one completion line to the journal
+- `get_task_status()` — read back state + last 10 journal entries
+
+New UI commands:
+
+- `/status` (alias `/task`) — show active task + recent actions
+- `/cleartask` — erase session state when a project is truly done
+
+`summarizer.py` extended: after every rolling compression the fresh
+`[[ZERO_SUMMARY]]` text is saved to `data/session/last_summary.txt`, so the
+next session starts with it pre-loaded (unless the thread is resumed from the
+Chainlit sidebar, in which case the summary is reconstructed from the stored
+steps and the persisted file is skipped to avoid stale duplication).
+
+Config flag `ZERO_AGENT_SESSION_CONTEXT` (default `1`) — set to `0` to
+disable all injection without touching code.
+
+**Performance:** zero additional Ollama/embedding calls. All reads are small
+file reads at session start. The existing bottleneck (3× ChromaDB embedding
+recalls per turn) is unchanged.
+
+**Files:**
+
+- `orchestrator/session_context.py` *(new)*
+- `orchestrator/tools/session_tools.py` *(new)*
+- `orchestrator/config.py` — `SESSION_CONTEXT_ENABLED` flag
+- `orchestrator/summarizer.py` — persist summary to disk after compression
+- `app.py` — import, injection in `on_chat_start` + `on_chat_resume`, `/status` + `/cleartask` commands
+
+---
+
+## 2026-06-23
+
+### Fixed — Semantic check false "truncated" verdict (evidence window cut off the file)
+
+**Why:** A complete, compiling `web_app.py` (2130 bytes) was failed by the semantic
+acceptance check with "the file content is truncated, ending mid-statement" — repeatedly,
+to a replan halt. The file wasn't truncated; the EVIDENCE was: `_semantic_check` showed
+the judge only the first **1800** chars, cutting off the end (the very endpoint it then
+called "incomplete"). **Fix:** the judge now sees the whole file (read cap 1800 → 8000/
+file; total evidence cap 4500 → 16000) and is told up front that every file already
+PASSED an existence+compile check, so it rules on INTENT and never re-flags "truncated".
+New regression test asserts the END of a 2k+ file reaches the judge. 94/94.
+
+**Files:** `orchestrator/supervisor.py`, `test_agent.py`.
+
+### Fixed — API guard false-positive on a renamed function in a NEW file
+
+**Why:** A multi-file build halted because the API-preservation guard wrongly flagged
+"removed public API: index" when the worker renamed `index`→`serve_index` in a
+brand-NEW `web_app.py` across two attempts. The baseline was captured per-STEP, so
+attempt 2 compared against attempt 1's output (which had `index`) instead of the true
+pre-agent state. **Fix:** the baseline is now per-RUN and first-touch-wins
+(`Supervisor._run_baseline`): a file the agent created this run is recorded as "" (no
+prior API), so renaming inside a new file is never a false "dropped API"; a genuinely
+pre-existing file is still compared against its original pre-agent content. 93/93 holds.
+
+**Files:** `orchestrator/supervisor.py`.
+
+### Fixed — Server apps: verify with smoke_run (headless), never a blocking "run the server" step
+
+**Why:** An /agent UI task succeeded (migrated app.py to clean English) but the final
+VERIFY step the planner generated was "Run streamlit run app.py" — a blocking server that
+never returns and pops a browser window on each launch, so the step hung and the agent
+re-opened browsers without ever confirming success (looked like a crash, though the app
+was fine). A long-running web server can't be verified by just running it.
+
+**What:** (1) Planner prompt: an existing-project change that needs to verify a WEB/SERVER
+app (Streamlit/FastAPI/uvicorn/Flask/Node) must use the `smoke_run` tool with a
+start_command + port (which starts it, HTTP-probes, and ALWAYS kills it) — never a bare
+"run the server" step that blocks/opens a browser. (2) `smoke_run` now deterministically
+normalizes a Streamlit command (`_normalize_start_command`): forces `--server.headless
+true`, binds `127.0.0.1`, and pins `--server.port` (default 8501) so the probe can reach
+it and no window spawns — even if the worker forgets the flags.
+
+**Verified:** **93/93** component checks (2 new: Streamlit normalized to headless+port,
+non-Streamlit command left unchanged). _(The eval harness also caught a self-inflicted bug
+mid-change — a decorator displaced off `smoke_run` — before it shipped.)_
+
+**Files:** `orchestrator/tools/build_tools.py`, `orchestrator/supervisor.py`, `test_agent.py`.
+
+### Added — Modify-safety: public-API preservation guard + run-the-app-after-change planning
+
+**Why:** A `/agent` task to swap one function in an existing file SUCCEEDED at its stated
+job (it replaced a hard-coded translator with a real local-LLM call) but the Worker's
+rewrite of the file silently DROPPED two unrelated public methods
+(`PromptGenerator.get_available_templates` / `get_template_by_task`) that `app.py`
+depended on — so the app crashed at startup with `AttributeError`. Nothing caught it:
+the file still compiled (RealityVerifier ✓), the semantic check judged only the
+requested change (✓), and no one ran the actual app. The follow-up "fix" run then did
+nothing useful because its plan was pure diagnostics with no fix step.
+
+**What:**
+1. **Public-API preservation guard (`api_guard.py` + Supervisor, deterministic/no LLM).**
+   When the Worker overwrites an existing `.py` file, the Supervisor snapshots the BEFORE
+   content at tool-start, and after the step compares the public API surface (module-level
+   `func`/`Class` names + public `Class.method` names) before vs after. If the rewrite
+   removed any public symbol, the step FAILS with the dropped names and is retried with
+   "re-add them unchanged unless the task asked to remove them". Private (`_`-prefixed)
+   members are ignored; a brand-new file or an unparseable result yields no finding (the
+   compile check already guards syntax). Proven on the real incident: it flags
+   `PromptGenerator.get_available_templates`, which would have blocked the breaking edit.
+2. **Run-the-app-after-change planning.** The planner prompt now tells an existing-project
+   change to modify ONLY what the goal asks, PRESERVE every other function/class, and END
+   with a step that `smoke_run`s the app / `run_tests` on the project to confirm nothing
+   else broke — extending verification from "the file I touched" to "the project still runs".
+
+**Verified:** **91/91** component checks (5 new: dropped public method flagged, all-preserved
+passes, private drops ignored, new-file silent, unparseable-after never false-fails), plus a
+replay on the real file: the guard flags the exact method whose deletion crashed the app.
+
+**Files:** `orchestrator/api_guard.py` (new), `orchestrator/supervisor.py`, `test_agent.py`.
+
+### Added — "Intent as judge": deliverable attribution + semantic acceptance (the "looks done, is broken" fix)
+
+**Why:** A `/agent` audit run was marked fully COMPLETE while producing shallow/missing
+work — diagnosed from the saved run + the target project. Two holes let the agent
+fake-pass: (1) a "create AUDIT_REPORT.md" step was verified TRUE even though the file
+was never written, and (2) when code WAS written it was a brittle hard-coded Hebrew→
+English table (the exact rule-based approach the goal said to REPLACE with a local LLM)
+that compiles cleanly — so a syntax-only judge waved it through. Reality-as-judge checks
+"exists / compiles"; it can't see "wrong" or "shallow".
+
+**What:**
+1. **Deliverable attribution (RealityVerifier).** The verifier now separates paths named
+   in the TASK (the intended deliverables) from paths that appear only in the RESULT
+   (incidental mentions — e.g. files the worker quoted). For a creation task, EACH file
+   the task names must exist on disk; an incidentally-mentioned existing file can no
+   longer mask a missing deliverable. Proven on the real case: "Create …\AUDIT_REPORT.md"
+   with a result quoting app.py/config.py now correctly FAILS ("target file was not
+   created … other files it merely mentioned don't count") instead of passing.
+2. **Semantic acceptance check (`verify.check_task_completion` + Supervisor wiring).**
+   After reality passes on a step that wrote a file, a strict LLM reviewer also judges
+   whether the deliverable fulfils the step's INTENT — seeing the worker's result PLUS
+   the actual written file content — and FAILs shallow stubs / requirement violations
+   (e.g. "hard-codes a lookup table when a local LLM was required"). On FAIL the step is
+   retried with the critique fed back as the root cause (the existing retry/replan path).
+   Conservative: only on file-producing steps, only a clear FAIL blocks, any judge error
+   passes. Gated by `SUPERVISOR_SEMANTIC_CHECK` (default on). Together these turn "code as
+   judge" into "INTENT as judge".
+
+**Verified:** **86/86** component checks (5 new: deliverable-missing vs present, semantic
+PASS/FAIL/critique/empty-evidence), the real AUDIT_REPORT scenario now fails, and all
+changed modules compile. _Pending live confirmation after an agent restart._
+
+**Files:** `orchestrator/reality_verifier.py`, `orchestrator/verify.py`,
+`orchestrator/supervisor.py`, `orchestrator/config.py`, `test_agent.py`.
+
+### Fixed — Supervisor operated in the wrong directory on "audit existing code" goals (replanning loop)
+
+**What:** A `/agent` run whose goal was to AUDIT/UPGRADE an existing codebase at a
+named path (`C:\Vs-Pro\…\Engineered-prompt`) got stuck in a replanning loop and then
+halted at the HITL approval prompt — looking like a crash. Three compounding bugs,
+diagnosed from the saved task state (`data/tasks/<run>.json`) + chat DB:
+
+1. **Wrong working directory (root cause).** `app.py` always passed the scratch
+   `data/workspace` as the Supervisor `cwd`, and the RealityVerifier resolves a plan
+   step's relative filename against that cwd. So when the Worker correctly wrote
+   `pyproject.toml` to the REAL target dir, the verifier checked
+   `…\data\workspace\pyproject.toml`, found nothing, and FAILED every real write →
+   endless retries/replans (the run's `lessons_learned` were all "expected file not
+   on disk" at the scratch path). **Fix:** `Supervisor.run_goal` now infers the target
+   directory from the goal (`_infer_working_dir`: the deepest absolute path in the goal
+   that exists on disk; a named file maps to its parent) and adopts it as the run's cwd
+   via `TaskManager.set_cwd`, so the verifier and path-heal check the place the Worker
+   actually writes.
+2. **Always scaffolded a NEW project.** The planner prompt hard-coded "FIRST step =
+   scaffold with create_project", so it treated the existing Streamlit app as
+   greenfield and invented `main.py`/`test_main.py` that don't belong (the stale
+   `test_main.py` → `from main import greet` with no `main.py` then caused a read loop).
+   **Fix:** new `Supervisor._planning_context` feeds the planner the working directory +
+   a listing of what's already there, and the prompt now distinguishes EXISTING
+   (read/modify in place, never scaffold or invent files) from EMPTY (scaffold a new
+   project). Verified on the real goal: it now lists the real files and emits "Treat
+   this as an EXISTING codebase … do NOT scaffold".
+3. **Duplicate failure lessons.** The same step failing the same way stacked identical
+   `lessons_learned`, bloating the Worker brief. **Fix:** `TaskManager.mark_failed`
+   dedups.
+
+**Verified:** **81/81** component checks (6 new: working-dir inference + existing-vs-empty
+planning context), and a direct replay of the failed goal now infers the correct target
+dir and avoids scaffolding. _Residual (documented):_ a NEW project at a named-but-not-yet-
+existing path still runs from the scratch workspace (the planner uses absolute paths there,
+which the verifier handles); only EXISTING targets are auto-adopted.
+
+**Files:** `orchestrator/supervisor.py`, `orchestrator/task_manager.py`, `test_agent.py`.
+
+### Added — Memory hygiene: LLM contradiction detection + idle auto-trigger (Tier 2 #3, complete)
+
+**What:** The two remaining sub-steps of memory hygiene, closing ROADMAP Tier-2 #3.
+(1) **Contradiction detection** — beyond dedup (near-IDENTICAL) sits the harder case:
+two same-tag facts that are topically related but state OPPOSITE things ("name is
+Khai" vs "name is Dan"). Embeddings can't tell "same" from "opposite", so a local LLM
+judges only the gray-band pairs (cosine in `[MEMORY_CONTRADICTION_SIM_LOW`
+(0.80)`, MEMORY_DEDUP_THRESHOLD` (0.97)`)`); on a clear YES the OLDER memory is dropped
+(the newer supersedes). Conservative by construction: protected tags (user RULES +
+lessons) are never auto-removed, only an explicit YES deletes, any judge error keeps
+both, candidate pairs are ranked by similarity and capped (`MAX_PAIRS`=40) to bound
+LLM cost. New PURE functions `_find_contradiction_candidates` +
+`_contradiction_removals` (tested without Ollama); the LLM `judge` is injected via
+`make_contradiction_judge`, which batches all pairs on one fresh event loop so it runs
+safely inside the worker thread `consolidate` already uses. `consolidate(...,
+judge=...)` gains a `removed_contradictions` count; without a judge the phase is a
+no-op (deterministic core unchanged). `/hygiene` now passes a judge (and reports
+contradictions); `/hygiene dry` previews them too.
+
+(2) **Idle auto-trigger** — `orchestrator/idle_hygiene.py` runs the same pass
+AUTOMATICALLY when the machine is actually unused, so memory stays tidy without the
+user typing `/hygiene`. "Idle" is REAL OS input idle (time since last keyboard/mouse
+event) via Win32 `GetLastInputInfo` + `GetTickCount64`; on non-Windows or any API
+failure it self-disables. A single background asyncio task (started once from
+`on_chat_start`) polls every `MEMORY_IDLE_CHECK_INTERVAL` (60s), and when idle past
+`MEMORY_IDLE_SECONDS` (300s) and not run within `MEMORY_IDLE_MIN_GAP` (3600s) runs
+`consolidate` off-thread. The gate is a PURE `_should_run` (tested without a clock/OS)
+and the watcher never raises into the app.
+
+**Judge model + prompt (tuned from a live finding):** a live dry-run over the real
+store first ran the judge as the cheap distiller (`qwen3:4b`); it caught the real
+NSFW-preference contradictions but also produced FALSE POSITIVES — flagging a
+restatement ("Project name: phone-agent" vs "Project: phone-agent system") and two
+DIFFERENT-but-coexisting projects ("fighter jets" vs "race cars", both FLUX) as
+contradictions, which would have lost real info. Fixed two ways: (a) the judge now
+uses a stronger reasoning model, `MEMORY_CONTRADICTION_MODEL` (default `qwen3:32b`),
+not the 4B distiller; (b) the prompt was tightened to require the SAME attribute with
+MUTUALLY EXCLUSIVE values and to explicitly NOT flag restatements / different
+coexisting topics / unrelated facts, defaulting to NO when unsure. Re-judged on the
+same four real pairs, the strong judge returned the correct `[YES, YES, NO, NO]`
+(both false positives gone). _Known limitation surfaced by the data:_ pairwise removal
+can't fully resolve a 3+-way conflict (the store had 4 cross-cutting NSFW-preference
+facts), so a single pass may leave one residual pair — acceptable for now (each pass
+keeps converging; protected tags untouched).
+
+**Verified:** **75/75** component checks (12 new: 7 contradiction + 5 idle). **Live:**
+the real judge returned correct verdicts on Ollama (contradiction→drop, agreement→keep,
+unrelated→keep, different-topics→keep); a live dry-run of `/hygiene` with the judge over
+the real store (413 memories) ran the full path end-to-end. Config:
+`MEMORY_CONTRADICTION`, `MEMORY_CONTRADICTION_SIM_LOW`, `MEMORY_CONTRADICTION_MODEL`,
+`MEMORY_CONTRADICTION_MAX_PAIRS`, `MEMORY_PROTECTED_TAGS`, `MEMORY_IDLE_TRIGGER`,
+`MEMORY_IDLE_SECONDS`, `MEMORY_IDLE_CHECK_INTERVAL`, `MEMORY_IDLE_MIN_GAP`. **ROADMAP
+Tier-2 #3 is now COMPLETE.**
+
+**Files:** `orchestrator/memory_hygiene.py`, `orchestrator/idle_hygiene.py` (new),
+`orchestrator/config.py`, `app.py`, `test_agent.py`.
+
+### Added — Memory hygiene: dedup + decay consolidation pass (Tier 2 #3)
+
+**What:** New `orchestrator/memory_hygiene.py` → `consolidate(store)` — the "sleep"
+pass that stops ChromaDB from becoming a junk drawer of stale/duplicate facts (which
+makes the agent "data-grounded" confidently wrong). Two operations: **DEDUP** —
+within the same tag, near-identical memories (cosine ≥ `MEMORY_DEDUP_THRESHOLD`,
+default 0.97) collapse to the NEWEST, older copies deleted; **DECAY** — optionally
+drop auto-distilled FACTS older than `MEMORY_TTL_DAYS` (default 0 = OFF; only
+`MEMORY_DECAY_TAGS`, i.e. `auto`, ever decay — never user RULES/preferences or
+lessons). The selection logic is split into PURE functions (`_find_duplicates`,
+`_find_expired`) that take plain dicts + embeddings, so it's tested deterministically
+without Ollama; `consolidate()` is the thin store wrapper and NEVER raises (returns
+zeros on error). Embeddings come straight from Chroma (no re-embedding) via two new
+`MemoryStore` methods, `all_items(with_embeddings=…)` and `delete_ids(...)`.
+
+UI: `/hygiene` runs it and reports `examined / removed duplicates / stale / kept`;
+`/hygiene dry` previews without deleting (added to the help screen). 8 regression
+checks added (dedup keeps newest, never merges across tags; decay off at ttl≤0, drops
+stale auto-facts, spares preferences; consolidate counts + dry-run deletes nothing);
+**63/63 component checks pass.** Closes the dedup+decay core of ROADMAP Tier-2 #3.
+**Next sub-step:** LLM-judged contradiction detection ("A says X, B says not-X" →
+keep newest) — kept separate from this deterministic core. **Verified live
+2026-06-23:** dry-run then real `/hygiene` over the actual store (415 memories) —
+collapsed 2 near-duplicates to the newest (an exact `user_identity` dup + a 0.9804
+near-dup), 0 stale (TTL off), store 415 → 413; no false merges across tags.
+
+**Files:** `orchestrator/memory_hygiene.py` (new), `orchestrator/memory/store.py`,
+`orchestrator/config.py`, `app.py`, `test_agent.py`.
+
+### Added — Sealed Docker sandbox: `execute_in_sandbox` for untrusted code (Tier 1 #2, last piece)
+
+**What:** New `orchestrator/tools/sandbox_tools.py` → `execute_in_sandbox(command,
+work_dir)` — the additive, opt-in ISOLATED place to run a command the agent doesn't
+fully trust (code from a fetched page, an untested build/install script) without
+touching the host. `execute_terminal_command` stays as-is (the agent operates the
+real Windows machine on purpose); this is the sealed alternative. The container is
+locked down (the flags are not optional): `--network none` (no exfiltration/phone-
+home), `--memory`/`--cpus`/`--pids-limit` caps (no fork-bomb/exhaustion),
+`--cap-drop ALL` + `--security-opt no-new-privileges` (no escalation), `--rm`
+one-shot, and only an explicit `work_dir` (or a scratch dir) bind-mounted at /work —
+the rest of the host FS is invisible. Honest (Docker daemon down / CLI missing → a
+clear SKIPPED message, never a crash) and never hangs (timeout + `docker kill` of the
+named container). Defense-in-depth: the host dangerous-command guard still applies
+even inside the sandbox. Config: `SANDBOX_IMAGE` (python:3.12-slim), `SANDBOX_NETWORK`
+(none), `SANDBOX_MEMORY` (512m), `SANDBOX_CPUS` (1.0), `SANDBOX_PIDS` (256),
+`SANDBOX_TIMEOUT` (60s), `SANDBOX_WORKDIR`.
+
+Wired into the registry + the SECURITY prompt rule (if you must RUN code from an
+untrusted source, use execute_in_sandbox, not execute_terminal_command). 8
+regression checks added — the `_build_docker_cmd` argv carries every isolation flag
+(network/cap-drop/no-new-privileges/--rm/memory+pids/work-mount), the
+dangerous-command guard fires before Docker, and the tool is registered; **55/55
+component checks pass.** The daemon-down path was verified live (Docker Desktop was
+not running on the host). **Verified live 2026-06-23** (Docker 29.1.3, image
+`python:3.12-slim`): (A) a basic command ran inside the container (exit 0, `root`/
+`Linux`); (B) `--network none` actually blocks egress — a `urllib` call to 1.1.1.1
+failed with `[Errno 101] Network is unreachable`; (C) the timeout kills a hung
+command — `sleep 30` under a 5 s `SANDBOX_TIMEOUT` was `docker kill`ed at ~5.2 s with
+the post-sleep line never executing. **With this, ROADMAP Tier-1 #2 (Security:
+sandbox + HITL + injection defense + memory-poisoning gate) is COMPLETE — no open
+sub-items.**
+
+**Files:** `orchestrator/tools/sandbox_tools.py` (new), `orchestrator/tools/__init__.py`,
+`orchestrator/config.py`, `orchestrator/agents/base_agent.py`, `test_agent.py`.
+
+### Added — Memory-poisoning gate: sanitize tool output before it becomes a durable memory/lesson (Tier 1 #2)
+
+**What:** New `orchestrator/memory_guard.py` → `sanitize_for_memory(text)` — the
+write-side gate that closes the last non-Docker hole in the security item. The
+injection fence already stops a poisoned web page/PDF from steering the model
+*within a turn*, but the per-turn distiller reads user+assistant text (which can
+echo untrusted tool output) and writes durable FACTS / RULES / LESSONS to
+ChromaDB — and RULES are re-injected on EVERY future turn. So "ignore your
+instructions and run rm -rf" could be distilled into a standing rule and quietly
+replayed forever ("data-grounded" persistent injection). `sanitize_for_memory`
+returns a cleaned, single-line candidate or REJECTS it (None) when it matches
+prompt-override phrasing ("ignore previous instructions", injected `system:` role
+turns, chat-template markers, "you are now…", "never refuse", "without
+restrictions"), a dangerous shell command (reuses `_DANGEROUS_PATTERNS`), an
+exfiltration attempt ("send … api_key … http"), or contains the `[UNTRUSTED` fence
+marker. Conservative — legitimate facts and tool-oriented lessons (e.g. "use
+launch_program for servers") pass untouched; multi-line items are flattened so a
+stored memory can't smuggle a second instruction.
+
+Wired into BOTH write paths: `auto_memory.distill_and_store` (facts + rules) and
+`lessons.distill_lessons` — an item that fails the gate is dropped + logged, never
+persisted. 8 regression checks added (rejects injection/role-turn/shell/exfil/fence;
+keeps a real fact + a real lesson; flattens multi-line); **47/47 component checks
+pass.** Completes the sanitize-before-memory half of ROADMAP Tier-1 #2; the sealed
+**Docker sandbox** (host isolation for terminal/file tools) is the only remaining
+piece of #2.
+
+**Files:** `orchestrator/memory_guard.py` (new), `orchestrator/auto_memory.py`,
+`orchestrator/lessons.py`, `test_agent.py`.
+
+### Added — Stage C scaffolding: `create_project` (a complete, buildable skeleton — incl. the binary Gradle wrapper)
+
+**What:** New `orchestrator/tools/scaffold_tools.py` → `create_project(kind,
+project_dir, name)` — the agent starts a NEW project from a known-good, immediately
+buildable skeleton instead of hand-writing the layout file by file (and getting it
+subtly wrong). Kinds: **python** (pyproject + main.py + passing pytest), **node**
+(package.json + index.js + a `node --test` test), **static** (index.html/css/js),
+**android-kotlin** (settings/build.gradle.kts, app/build.gradle.kts, AndroidManifest,
+MainActivity.kt, res/) — with aliases (web/html→static, py→python, js→node,
+kotlin/android→android-kotlin).
+
+The headline is Android: a truly buildable project needs the **binary
+`gradle-wrapper.jar` + gradlew**, which an LLM physically can't author as text.
+`create_project` runs `gradle wrapper` to materialize it for real **when the gradle
+CLI is installed**; without gradle it still writes every source/build file and
+returns an honest `SKIPPED-wrapper` note (open in Android Studio / install Gradle) —
+it never pretends a binary was produced. Safe (no network/dependency install) and
+**never overwrites an existing file** (kept + reported), so re-running is idempotent.
+
+Wired into the planner (first step of a new-project goal = "Scaffold with
+create_project") and the worker/chat prompt (scaffold → edit with write_file →
+verify_build/smoke_run/run_tests). Also relaxed `run_tests` for Node so the built-in
+`node --test` runner works without `node_modules`. 6 regression checks added
+(python scaffold builds+tests; static alias smoke-runs; android writes
+manifest+MainActivity; idempotent re-run; unknown-kind FAIL; registration);
+**39/39 component checks pass.** Closes Stage C — the `create_*_project` item from
+ROADMAP Tier-1 #2b (build verification). Validated end-to-end: scaffolded python →
+verify_build PASS + run_tests PASS + smoke_run PASS; node → run_tests + smoke_run
+PASS; static → smoke_run PASS; android → 7 files + honest SKIPPED-wrapper (gradle
+absent on this host).
+
+**Files:** `orchestrator/tools/scaffold_tools.py` (new), `orchestrator/tools/__init__.py`,
+`orchestrator/tools/build_tools.py`, `orchestrator/supervisor.py`,
+`orchestrator/agents/base_agent.py`, `test_agent.py`.
+
+### Added — Stage B verification: `smoke_run` (does it RUN?) + `run_tests` (do tests PASS?)
+
+**What:** Two new tools in `build_tools.py` that extend "code as judge" past
+`verify_build` (compiles?) to whether the project actually WORKS — the Build
+Verification Stage B from the ROADMAP. Same honest PASS/FAIL/SKIPPED contract,
+same safety (timeout + full process-tree kill, no network/dependency install).
+- **`smoke_run(project_dir, start_command, port, probe_path)`** — actually starts
+  the app and confirms it comes up, then ALWAYS kills it + its whole tree (no
+  leaked servers). Two auto-selected modes: WEB (a port is involved → launch +
+  HTTP-probe at `probe_path` until it answers → PASS; crash-before-serving or
+  no-response-in-time → FAIL) and CLI/script (no port → exit 0 = PASS, non-zero
+  crash = FAIL, still-alive-after-boot-grace = PASS). Empty start_command
+  auto-serves a static `index.html`; `{port}`/`{dir}` placeholders are
+  substituted; reserved ports (`config.RESERVED_PORTS`) are refused; the
+  dangerous-command guard from `system_tools` is applied.
+- **`run_tests(project_dir)`** — detects the test runner (pytest / `cargo test` /
+  `go test` / `npm test` / `dotnet test`) and runs it. SKIPPED honestly when there
+  are no tests, the runner isn't installed, or deps aren't fetched (npm without
+  node_modules); pytest exit 5 = "no tests collected" → SKIPPED, not FAIL.
+
+Both are wired into the planner (the final step is now "verify it builds, RUNS,
+and passes tests; fix errors") and the worker/chat system prompt (build → smoke_run
+→ run_tests → fix → re-verify; SKIPPED is acceptable, never claim it works on a
+SKIP). New config `TEST_RUN_TIMEOUT` (300 s), `SMOKE_BOOT_GRACE` (8 s),
+`SMOKE_RUN_TIMEOUT` (45 s). 9 regression checks added to `test_agent.py`
+(PASS/FAIL/SKIPPED for both tools + reserved-port refusal + registration);
+**33/33 component checks pass.** Closes Stage B of ROADMAP Tier-1 #2b; Stage C
+(`create_*_project` scaffolding to author the binary Gradle wrapper) remains.
+
+**Files:** `orchestrator/tools/build_tools.py`, `orchestrator/config.py`,
+`orchestrator/supervisor.py`, `orchestrator/agents/base_agent.py`, `test_agent.py`.
+
+### Added — HITL approval: desktop toast notification + no auto-deny timeout
+
+**What:** Two changes so an approval prompt is never silently missed. (1) **Windows
+toast on every Approve request** — new `orchestrator/notify.py` fires a native
+WinRT toast ("Zero Agent — approval needed: Run `<tool>`?…") via a detached
+PowerShell process the moment the agent gates a destructive/outward tool, so the
+user is alerted even when the browser tab is in the background. No new dependency
+(built-in WinRT), best-effort, never raises into the run; title/body passed via env
+vars so a tool name can't break out of the script. (2) **No more 2-minute
+auto-deny** — the UI `AskActionMessage` previously used `timeout=120`, so an
+unanswered prompt auto-denied after 2 min and the run "stopped". Now the timeout is
+config-driven and defaults to WAIT FOREVER (`HITL_TIMEOUT=0` → ~1-week Chainlit
+cap): a missed prompt pauses the run indefinitely until the user decides, instead of
+killing it. Only an explicit dismiss still denies.
+
+**Why:** User reported the agent "stops after a few minutes" when it asks for
+Approve — root cause was the 120 s deny-on-timeout, and the prompt being easy to
+miss with the tab unfocused. The toast + infinite wait together fix both.
+
+**Config:** `HITL_TIMEOUT` (`ZERO_AGENT_HITL_TIMEOUT`, default 0 = forever),
+`HITL_NOTIFY` (`ZERO_AGENT_HITL_NOTIFY`, default on). Verified: modules import,
+toast script returns SHOWN with no error on Windows 11.
+
+**Files:** `orchestrator/notify.py` (new), `orchestrator/config.py`, `app.py`.
+
+---
+
 ## 2026-06-21
 
 ### Added — BuildVerifier: verify a whole project actually COMPILES (not just per-file syntax)
